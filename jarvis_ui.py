@@ -1,18 +1,18 @@
-"""Interface graphique de Jarvis, style Iron Man. Lancer : python jarvis_ui.py
+"""Jarvis's window, Iron Man style. Run: python jarvis_ui.py
 
-Toute l'intelligence est dans jarvis_core.py ; ce fichier ne gère que l'affichage.
-À gauche : le réacteur arc (qui réagit à l'état de Jarvis), l'horloge, les voyants
-et les boutons. À droite : la conversation.
+All the smarts are in jarvis_core.py; this file only deals with what you see.
+On the left: the arc reactor (it reacts to what Jarvis is doing), the clock, the status
+lights and the buttons. On the right: the conversation.
 
-Trois façons de parler à Jarvis : taper, cliquer sur 🎤, ou dire « Hey Jarvis »
-(réveil vocal, voir jarvis_wake.py ; bouton ÉCOUTE pour l'activer / le couper).
-Bouton GESTES : contrôle par gestes et mouvements de la main (voir jarvis_gestures.py).
-Bouton INTERFACE HOLO : écran holographique plein écran piloté à la main (voir jarvis_holo.py).
+Three ways to talk to Jarvis: type, click 🎤, or say "Hey Jarvis"
+(wake word, see jarvis_wake.py; the ÉCOUTE button turns it on and off).
+GESTES button: control with hand gestures and moves (see jarvis_gestures.py).
+INTERFACE HOLO button: full-screen holographic display you drive with your hand (see jarvis_holo.py).
 
-Point important : le modèle met plusieurs secondes à répondre. Pour que la fenêtre
-ne gèle pas, chaque question est traitée dans un thread séparé. Mais Tkinter interdit
-de modifier la fenêtre depuis un autre thread : ces threads passent donc leurs
-mises à jour par une file (self.ui), que la fenêtre vide toutes les 30 ms.
+One thing to keep in mind: the model takes several seconds to answer. So the window doesn't
+freeze, each question is handled in its own thread. But Tkinter doesn't allow touching the
+window from another thread, so those threads send their updates through a queue (self.ui),
+which the window empties every 30 ms.
 """
 import queue
 import sys
@@ -34,7 +34,7 @@ from jarvis_holo import HoloHUD
 from jarvis_reminders import reminders
 
 ctk.set_appearance_mode("dark")
-STATE_FILE = BASE_DIR / "jarvis_state.json"  # petit état entre deux lancements (date du dernier briefing)
+STATE_FILE = BASE_DIR / "jarvis_state.json"  # a little state kept between runs (date of the last briefing)
 
 
 def hud_font(size, bold=False):
@@ -43,56 +43,56 @@ def hud_font(size, bold=False):
 
 class JarvisApp(ctk.CTk):
     def __init__(self, hidden=False):
-        """hidden=True : démarre sans fenêtre, seulement l'icône près de l'horloge
-        (utilisé au démarrage de Windows)."""
+        """hidden=True: start without a window, just the icon next to the clock
+        (that's how it starts with Windows)."""
         super().__init__(fg_color=hud.BG)
         from PIL import ImageTk
-        self.icon_image = ImageTk.PhotoImage(hud.make_icon(64))  # gardée en mémoire (sinon effacée)
-        self.iconphoto(True, self.icon_image)                   # icône de la fenêtre et de la barre des tâches
+        self.icon_image = ImageTk.PhotoImage(hud.make_icon(64))  # keep a reference, or it gets garbage-collected
+        self.iconphoto(True, self.icon_image)                   # window and taskbar icon
         self.title("J.A.R.V.I.S")
         self.geometry("1100x680")
         self.minsize(900, 560)
-        self.history = load_history()    # conversation récente (partagée avec jarvis.py)
+        self.history = load_history()    # recent conversation (shared with jarvis.py)
         self.speaker = Speaker()
-        self.busy = False                # True pendant qu'une question est en cours
-        self.listening = False           # True pendant l'écoute du micro (réacteur plus vif)
-        self.error_until = 0.0           # le réacteur reste rouge jusqu'à cet instant
-        self.status_text = ""            # texte de statut, lu aussi par l'interface holo
-        self.holo = None                 # interface holographique, quand elle est ouverte
-        self.gestures_before_holo = False  # surveillance des gestes à rallumer en fermant le HUD
-        self.ui_queue = queue.Queue()    # mises à jour de l'écran envoyées par les threads
-        # Réveil vocal : en pause pendant que Jarvis réfléchit ou parle
+        self.busy = False                # True while a question is being handled
+        self.listening = False           # True while listening to the mic (brighter reactor)
+        self.error_until = 0.0           # the reactor stays red until then
+        self.status_text = ""            # status text, also read by the holo display
+        self.holo = None                 # the holographic display, when it's open
+        self.gestures_before_holo = False  # whether to turn gesture watching back on when the HUD closes
+        self.ui_queue = queue.Queue()    # screen updates sent over by other threads
+        # Wake word: paused while Jarvis is thinking or talking
         self.wake = WakeWordListener(on_wake=self.on_wake, on_command=self.on_voice_command,
                                      on_error=lambda msg: self.ui(self.on_wake_error, msg),
                                      is_paused=lambda: self.busy or self.speaker.is_speaking(),
                                      on_idle=self.on_followup_idle)
-        # Gestes : désactivés au démarrage (la webcam ne s'allume que via le bouton GESTES)
+        # Gestures start off (the webcam only turns on with the GESTES button)
         self.gestures = GestureWatcher(on_gesture=lambda name: self.ui(self.on_gesture, name),
                                        on_error=lambda msg: self.ui(self.on_gesture_error, msg))
         self.setup_ui()
-        # Prépare le modèle pendant que la fenêtre s'ouvre (et lance Ollama s'il ne tourne pas)
+        # Warm up the model while the window opens (and start Ollama if it isn't running)
         warm_up(self.history, TOOLS,
                 on_error=lambda msg: self.ui(self.show_error, msg),
                 on_status=lambda msg: self.ui(self.set_status, msg))
         self.poll_ui_queue()
         self.tick_clock()
         self.wake.start()
-        # Rappels : annoncés à l'écran et à voix haute (thread de vérification -> file self.ui)
+        # Reminders: shown on screen and said out loud (checker thread -> self.ui queue)
         reminders.on_due = lambda message, late: self.ui(self.announce_reminder, message, late)
         reminders.start()
-        # Arrière-plan : la croix cache la fenêtre, Jarvis reste actif près de l'horloge
+        # Background mode: the X hides the window, Jarvis keeps running next to the clock
         self.protocol("WM_DELETE_WINDOW", self.hide_to_tray)
         self.tray_hint_shown = False
         self.setup_tray()
         if hidden:
             self.withdraw()
-        self.after(1700, self.greet)  # après la séquence d'allumage du réacteur
+        self.after(1700, self.greet)  # after the reactor's startup animation
 
-    # --- Arrière-plan (icône près de l'horloge) ---
+    # --- Background mode (icon next to the clock) ---
 
     def setup_tray(self):
-        """Icône dans la zone de notification. Ses menus s'exécutent dans un autre thread :
-        ils passent donc par self.ui, comme tout ce qui touche à la fenêtre."""
+        """Icon in the notification area. Its menu runs in another thread, so it goes
+        through self.ui like everything else that touches the window."""
         menu = pystray.Menu(
             pystray.MenuItem("Afficher Jarvis", lambda: self.ui(self.show_window), default=True),
             pystray.MenuItem("Interface holographique", lambda: self.ui(self.open_holo)),
@@ -102,7 +102,7 @@ class JarvisApp(ctk.CTk):
 
     def hide_to_tray(self):
         self.withdraw()
-        if not self.tray_hint_shown:  # explique une fois où est passé Jarvis
+        if not self.tray_hint_shown:  # explain once where Jarvis went
             self.tray_hint_shown = True
             self.tray.notify("Jarvis reste actif en arrière-plan. Clic droit sur son icône > Quitter "
                              "pour l'arrêter.", "Jarvis")
@@ -114,22 +114,22 @@ class JarvisApp(ctk.CTk):
 
     def quit_app(self):
         self.wake.enabled = False
-        self.gestures.enabled = False  # éteint la webcam si elle était allumée
+        self.gestures.enabled = False  # turns the webcam off if it was on
         if self.holo:
             self.holo.close()
         self.speaker.stop()
         self.tray.stop()
-        # Ne PAS annuler toutes les tâches programmées (self.after) avant : CustomTkinter
-        # en a besoin pour se détruire, sinon la fermeture reste bloquée
+        # Don't cancel all the scheduled self.after tasks first: CustomTkinter needs them
+        # to tear itself down, otherwise closing hangs
         self.destroy()
 
-    # --- Construction de la fenêtre ---
+    # --- Building the window ---
 
     def setup_ui(self):
         self.grid_columnconfigure(1, weight=1)
         self.grid_rowconfigure(1, weight=1)
 
-        # En-tête sur toute la largeur
+        # Header across the full width
         header = ctk.CTkFrame(self, fg_color="transparent")
         header.grid(row=0, column=0, columnspan=2, sticky="ew", padx=24, pady=(16, 0))
         ctk.CTkLabel(header, text="J.A.R.V.I.S", font=hud_font(30, True),
@@ -138,14 +138,14 @@ class JarvisApp(ctk.CTk):
                      text_color=hud.TEXT_DIM).pack(side="left", pady=(10, 0))
         self.clock = ctk.CTkLabel(header, text="", font=hud_font(13), text_color=hud.CYAN)
         self.clock.pack(side="right")
-        ctk.CTkFrame(self, height=1, fg_color=hud.CYAN_DIM).grid(  # fine ligne sous l'en-tête
+        ctk.CTkFrame(self, height=1, fg_color=hud.CYAN_DIM).grid(  # thin line under the header
             row=0, column=0, columnspan=2, sticky="sew", padx=24)
 
         self.setup_side_panel()
         self.setup_chat()
 
     def setup_side_panel(self):
-        """Colonne de gauche : réacteur, statut, voyants, boutons."""
+        """Left column: reactor, status, status lights, buttons."""
         side = ctk.CTkFrame(self, fg_color="transparent", width=300)
         side.grid(row=1, column=0, sticky="ns", padx=(24, 12), pady=16)
 
@@ -156,7 +156,7 @@ class JarvisApp(ctk.CTk):
                                    text_color=hud.CYAN, wraplength=280)
         self.status.pack(pady=(0, 14))
 
-        # Voyants : ● actif, ○ coupé
+        # Status lights: ● on, ○ off
         box = ctk.CTkFrame(side, fg_color=hud.PANEL, border_color=hud.CYAN_DIM, border_width=1,
                            corner_radius=6)
         box.pack(fill="x", pady=(0, 14))
@@ -168,7 +168,7 @@ class JarvisApp(ctk.CTk):
             self.indicators[key] = ctk.CTkLabel(row, text="", font=hud_font(12, True))
             self.indicators[key].pack(side="right")
 
-        # Boutons interrupteurs
+        # Toggle buttons
         buttons = ctk.CTkFrame(side, fg_color="transparent")
         buttons.pack(fill="x")
         buttons.grid_columnconfigure((0, 1, 2), weight=1)
@@ -182,7 +182,7 @@ class JarvisApp(ctk.CTk):
         self.update_indicators()
 
     def setup_chat(self):
-        """Colonne de droite : conversation et saisie."""
+        """Right column: the conversation and the input box."""
         right = ctk.CTkFrame(self, fg_color="transparent")
         right.grid(row=1, column=1, sticky="nsew", padx=(12, 24), pady=16)
         right.grid_rowconfigure(0, weight=1)
@@ -215,10 +215,10 @@ class JarvisApp(ctk.CTk):
                              font=hud_font(12, True), fg_color="transparent", hover_color=hud.CYAN_DIM,
                              border_color=hud.CYAN, border_width=1, text_color=hud.CYAN, corner_radius=4)
 
-    # --- État visuel ---
+    # --- Visual state ---
 
     def reactor_state(self):
-        """Appelée ~30 fois par seconde par le réacteur."""
+        """Called about 30 times a second by the reactor."""
         if time.monotonic() < self.error_until:
             return "error"
         if self.listening:
@@ -244,7 +244,7 @@ class JarvisApp(ctk.CTk):
         self.after(1000, self.tick_clock)
 
     def show_previous_conversation(self, count=10):
-        """Réaffiche les derniers échanges (Jarvis s'en souvient : autant les voir)."""
+        """Show the last few exchanges again (Jarvis remembers them, so you might as well see them)."""
         shown = [m for m in self.history if m["role"] in ("user", "assistant") and m["content"].strip()]
         if not shown:
             return
@@ -254,7 +254,7 @@ class JarvisApp(ctk.CTk):
         self.write("── nouvelle session ──\n\n", "jarvis")
 
     def greet(self):
-        """Accueil : briefing complet au premier lancement de la journée, simple salut ensuite."""
+        """Greeting: the full briefing on the first start of the day, just a hello after that."""
         self.show_previous_conversation()
         hour = datetime.now().hour
         hello = "Bonjour" if 5 <= hour < 18 else "Bonsoir"
@@ -265,7 +265,7 @@ class JarvisApp(ctk.CTk):
         state["last_briefing"] = date.today().isoformat()
         save_json(STATE_FILE, state)
         self.set_status("Préparation du briefing...")
-        # La météo passe par Internet : on prépare le briefing hors du thread de la fenêtre
+        # The weather comes from the Internet, so the briefing is built outside the window thread
         threading.Thread(target=lambda: self.ui(self.say_and_show, build_briefing(hello)), daemon=True).start()
 
     def say_and_show(self, message):
@@ -273,14 +273,14 @@ class JarvisApp(ctk.CTk):
         self.speaker.say(message)
         self.set_status(self.idle_status())
 
-    # --- Communication entre threads et fenêtre ---
+    # --- Talking between threads and the window ---
 
     def ui(self, fn, *args):
-        """Depuis un thread : demande à la fenêtre d'exécuter fn(*args) dès que possible."""
+        """From any thread: ask the window to run fn(*args) as soon as it can."""
         self.ui_queue.put((fn, args))
 
     def poll_ui_queue(self):
-        """Exécute les mises à jour en attente, puis se reprogramme dans 30 ms."""
+        """Run the pending updates, then check again in 30 ms."""
         try:
             while True:
                 fn, args = self.ui_queue.get_nowait()
@@ -289,17 +289,17 @@ class JarvisApp(ctk.CTk):
             pass
         self.after(30, self.poll_ui_queue)
 
-    # --- Affichage ---
+    # --- Display ---
 
     def write(self, text, tag=None):
-        """Ajoute du texte à la fin du chat (tag = couleur optionnelle)."""
+        """Add text at the end of the chat (tag = optional color)."""
         self.chat_box.configure(state="normal")
         self.chat_box.insert("end", text, tag)
         self.chat_box.configure(state="disabled")
-        self.chat_box.see("end")  # défile jusqu'en bas
+        self.chat_box.see("end")  # scroll to the bottom
 
     def add_message(self, sender, message, tag=None):
-        """Affiche un message complet : « NOM > message »."""
+        """Show a whole message: "NAME > message"."""
         tag = tag or ("jarvis" if sender == "Jarvis" else "user")
         self.write(f"{sender.upper()} > ", tag)
         self.write(f"{message}\n\n")
@@ -312,7 +312,7 @@ class JarvisApp(ctk.CTk):
         return "Dites « Hey Jarvis »" if self.wake.enabled else "En attente"
 
     def set_busy(self, busy, status=None):
-        """Bloque (ou débloque) les boutons pendant qu'une question est traitée."""
+        """Disable (or re-enable) the buttons while a question is being handled."""
         self.busy = busy
         state = "disabled" if busy else "normal"
         self.send_btn.configure(state=state)
@@ -320,28 +320,28 @@ class JarvisApp(ctk.CTk):
         self.set_status(status or self.idle_status())
 
     def announce_reminder(self, message, late_minutes):
-        """Un rappel arrive : bip, message, voix, et fenêtre ramenée au premier plan."""
+        """A reminder is due: beep, message, voice, and the window comes to the front."""
         text = f"Rappel : {message}"
-        if late_minutes:  # arrivé pendant que Jarvis était fermé
+        if late_minutes:  # came due while Jarvis was closed
             text = f"Rappel manqué (il y a {late_minutes} min) : {message}"
         threading.Thread(target=lambda: [winsound.Beep(988, 150) for _ in range(3)], daemon=True).start()
         self.add_message("Jarvis", "⏰ " + text)
         self.speaker.say(text)
-        self.deiconify()  # ré-ouvre la fenêtre si elle était réduite
+        self.deiconify()  # bring the window back if it was minimized
         self.lift()
         self.attributes("-topmost", True)
         self.after(1000, lambda: self.attributes("-topmost", False))
 
     def show_error(self, message):
-        self.error_until = time.monotonic() + 3  # réacteur rouge 3 secondes
+        self.error_until = time.monotonic() + 3  # red reactor for 3 seconds
         self.add_message("Jarvis", message, "error")
 
-    # --- Boutons ---
+    # --- Buttons ---
 
     def toggle_mute(self):
         self.speaker.muted = not self.speaker.muted
         if self.speaker.muted:
-            self.speaker.stop()  # coupe aussi la phrase en cours
+            self.speaker.stop()  # also cuts off the current sentence
         self.update_indicators()
 
     def toggle_wake(self):
@@ -351,7 +351,7 @@ class JarvisApp(ctk.CTk):
             self.set_status(self.idle_status())
 
     def on_wake_error(self, message):
-        """Le réveil vocal ne peut pas fonctionner : on le désactive et on prévient."""
+        """The wake word can't work: switch it off and say so."""
         self.wake.enabled = False
         self.wake_btn.configure(state="disabled")
         self.update_indicators()
@@ -360,25 +360,25 @@ class JarvisApp(ctk.CTk):
     def toggle_gestures(self):
         self.gestures.enabled = not self.gestures.enabled
         if self.gestures.enabled:
-            self.gestures.start()  # ne démarre le thread qu'une fois
+            self.gestures.start()  # only starts the thread once
         self.update_indicators()
         if not self.busy:
             if not self.gestures.enabled:
                 self.set_status(self.idle_status())
             elif model_ready():
                 self.set_status("✋ Gestes et mouvements activés")
-            else:  # sans modèle entraîné, glisser et pincer marchent quand même
+            else:  # without a trained model, swipe and pinch still work
                 self.set_status("✋ Mouvements activés (aucun geste entraîné)")
 
     def on_gesture(self, name):
-        """Un geste a été reconnu : on exécute son action et on l'affiche."""
+        """A gesture was recognized: run its action and show it."""
         action, description = GESTURE_ACTIONS.get(name, (None, "aucune action"))
         if action == "ecouter":
-            self.send_voice()  # comme un clic sur 🎤 (ignoré si Jarvis est occupé)
-            return             # send_voice affiche lui-même « Écoute en cours »
+            self.send_voice()  # same as clicking 🎤 (ignored if Jarvis is busy)
+            return             # send_voice shows "Écoute en cours" by itself
         if callable(action):
-            threading.Thread(target=action, daemon=True).start()  # ne pas geler la fenêtre
-        if not self.busy:      # ne pas écraser « Jarvis réfléchit... »
+            threading.Thread(target=action, daemon=True).start()  # don't freeze the window
+        if not self.busy:      # don't overwrite "Jarvis réfléchit..."
             self.set_status(f"✋ {name} → {description}")
 
     def on_gesture_error(self, message):
@@ -386,41 +386,41 @@ class JarvisApp(ctk.CTk):
         self.update_indicators()
         self.set_status(message)
 
-    # --- Interface holographique ---
+    # --- Holographic display ---
 
     def open_holo(self):
-        """Ouvre l'écran holographique plein écran, piloté à la main (voir jarvis_holo.py)."""
+        """Open the full-screen holographic display you drive with your hand (see jarvis_holo.py)."""
         if self.holo and self.holo.running:
             return
-        # Une seule application à la fois peut utiliser la webcam : on met les gestes en pause
+        # Only one app at a time can use the webcam, so gesture watching is paused
         self.gestures_before_holo = self.gestures.enabled
         self.gestures.enabled = False
         self.update_indicators()
-        # Ces fonctions sont appelées depuis le thread du HUD : elles ne font que lire
-        # des valeurs, ou passent par self.ui pour agir sur la fenêtre
+        # These are called from the HUD's thread: they either just read values,
+        # or go through self.ui to act on the window
         self.holo = HoloHUD(on_talk=lambda: self.ui(self.send_voice),
                             get_state=self.reactor_state,
                             get_status=lambda: self.status_text,
                             get_reply=self.last_reply,
                             on_close=lambda: self.ui(self.on_holo_closed),
                             on_error=lambda msg: self.ui(self.show_error, msg))
-        self.holo.start(wait_for=lambda: not self.gestures.running)  # attend que la webcam soit libre
+        self.holo.start(wait_for=lambda: not self.gestures.running)  # waits until the webcam is free
 
     def on_holo_closed(self):
-        if self.gestures_before_holo:  # la surveillance des gestes reprend
+        if self.gestures_before_holo:  # gesture watching picks up again
             self.gestures.enabled = True
             self.gestures.start()
         self.update_indicators()
 
     def last_reply(self):
-        """Dernière réponse de Jarvis (pour l'interface holo)."""
-        for m in reversed(list(self.history)):  # copie : l'historique change pendant une réponse
+        """Jarvis's last answer (for the holo display)."""
+        for m in reversed(list(self.history)):  # a copy, since the history changes while an answer comes in
             if m["role"] == "assistant" and m["content"].strip():
                 return m["content"]
         return ""
 
     def clear_history(self):
-        """Vide la conversation récente. La mémoire à long terme et les faits restent intacts."""
+        """Clear the recent conversation. Long-term memory and facts are left alone."""
         if self.busy:
             return
         self.history.clear()
@@ -430,14 +430,14 @@ class JarvisApp(ctk.CTk):
         self.chat_box.configure(state="disabled")
         self.add_message("Jarvis", "Conversation effacée. Mes souvenirs à long terme sont conservés.")
 
-    # --- Traitement d'une question (hors du thread de la fenêtre) ---
+    # --- Handling a question (outside the window thread) ---
 
     def send_text(self):
         text = self.input_field.get().strip()
         if not text or self.busy:
             return
         self.input_field.delete(0, "end")
-        self.speaker.stop()  # on coupe Jarvis s'il parlait encore
+        self.speaker.stop()  # cut Jarvis off if he was still talking
         self.add_message(USER_LABEL, text)
         self.set_busy(True, "Jarvis réfléchit...")
         threading.Thread(target=self.process, args=(text,), daemon=True).start()
@@ -450,14 +450,14 @@ class JarvisApp(ctk.CTk):
         self.set_busy(True, "🎤 Écoute en cours...")
         threading.Thread(target=self.voice_process, daemon=True).start()
 
-    # Appelés depuis le thread du réveil vocal
+    # Called from the wake word thread
     def on_wake(self, followup=False):
-        self.busy = True  # immédiat : empêche un 2e déclenchement avant la mise à jour de l'écran
+        self.busy = True  # set right away, so it can't trigger twice before the screen updates
         self.listening = True
         self.ui(self.set_busy, True, "🎤 Je vous écoute encore..." if followup else "🎤 Je vous écoute...")
 
     def on_followup_idle(self):
-        """Mode conversation : personne n'a enchaîné, Jarvis se rendort."""
+        """Conversation mode: nobody followed up, so Jarvis goes back to sleep."""
         self.listening = False
         self.ui(self.set_busy, False)
 
@@ -481,11 +481,11 @@ class JarvisApp(ctk.CTk):
         self.process(text, True)
 
     def process(self, user_input, from_voice=False):
-        """Tourne dans un thread : interroge Jarvis, affiche et prononce la réponse au fil de l'eau.
-        from_voice : la question a été posée à la voix -> mode conversation après la réponse."""
+        """Runs in a thread: ask Jarvis, then show and speak the answer as it comes in.
+        from_voice: the question was spoken -> conversation mode after the answer."""
         try:
             self.ui(self.write, "JARVIS > ", "jarvis")
-            voice = SentenceStreamer(self.speaker)  # parle phrase par phrase, pendant l'écriture
+            voice = SentenceStreamer(self.speaker)  # speaks sentence by sentence, while the text is still coming
 
             def on_token(piece):
                 self.ui(self.write, piece)
@@ -496,10 +496,10 @@ class JarvisApp(ctk.CTk):
                           on_status=lambda text: self.ui(self.set_status, text))
             finally:
                 self.ui(self.write, "\n\n")
-            voice.flush()  # dernière phrase
+            voice.flush()  # last sentence
             if from_voice:
-                # Mode conversation : dès que Jarvis aura fini de parler, il écoute la suite
-                # quelques secondes sans « Hey Jarvis » (le réveil vocal attend la fin de la voix)
+                # Conversation mode: once Jarvis is done talking, he listens for a follow-up
+                # for a few seconds, no "Hey Jarvis" needed (the wake word waits for the voice to finish)
                 self.wake.listen_again()
         except ConnectionError:
             self.ui(self.show_error, "Ollama ne répond pas. Lancez-le avec `ollama serve`.")
@@ -510,8 +510,8 @@ class JarvisApp(ctk.CTk):
 
 
 if __name__ == "__main__":
-    # Lancé avec pythonw (raccourci, démarrage de Windows), il n'y a pas de console :
-    # les messages et erreurs sont alors écrits dans jarvis.log pour pouvoir diagnostiquer.
+    # When started with pythonw (shortcut, Windows startup) there's no console, so
+    # messages and errors go to jarvis.log instead, to help figure out what went wrong.
     if sys.stdout is None:
         log = open(BASE_DIR / "jarvis.log", "a", encoding="utf-8", buffering=1)
         sys.stdout = sys.stderr = log

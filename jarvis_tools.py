@@ -1,18 +1,24 @@
-"""Outils que Jarvis peut appeler de lui-même.
+"""The tools Jarvis can decide to use on his own.
 
-Comment ça marche :
-1. Chaque fonction décorée par @tool est envoyée au modèle avec sa description.
-   Ollama construit cette description à partir du nom, des types et de la docstring.
-2. Quand l'utilisateur demande « ouvre Spotify », le modèle répond non pas par du texte
-   mais par « appelle ouvrir_application(nom="Spotify") ».
-3. jarvis_core.ask_model exécute la fonction et renvoie son résultat au modèle,
-   qui formule alors sa réponse finale.
+How it works:
+1. Every function decorated with @tool is sent to the model along with a description.
+   Ollama builds that description from the name, the parameter types and the docstring.
+2. When you say "ouvre Spotify", the model doesn't answer with text; it answers
+   with "call ouvrir_application(nom="Spotify")".
+3. jarvis_core.ask_model runs the function and sends the result back to the model,
+   which then writes its final answer.
 
-Pour ajouter un outil :
-- écrire une fonction avec des paramètres typés (str, int...) qui retourne un texte ;
-- lui donner une docstring claire, avec une section Args décrivant chaque paramètre
-  (c'est ce que lit le modèle pour savoir QUAND l'utiliser : soigner la 1re phrase) ;
-- la décorer avec @tool("texte affiché dans la barre de statut pendant l'exécution").
+A word about language: the tool names, parameters and docstrings are in French on purpose.
+They aren't just documentation, they're part of the prompt. Jarvis talks with you in French,
+and these descriptions were tuned by trial and error against a benchmark (23/25). Rewriting
+them changes how the model behaves, so re-test if you touch them.
+
+To add a tool:
+- write a function with typed parameters (str, int...) that returns some text;
+- give it a clear docstring with an Args section describing each parameter. That's what
+  the model reads to decide WHEN to use it, so take care with the first sentence, and say
+  when NOT to use it if another tool is close;
+- decorate it with @tool("text shown in the status bar while it runs").
 """
 import ast
 import csv
@@ -38,18 +44,18 @@ from jarvis_config import greeting
 from jarvis_core import add_fact, now_text
 from jarvis_reminders import reminders
 
-# Seuls dossiers que Jarvis peut lire / modifier : (noms acceptés, chemin, nom affiché)
+# The only folders Jarvis is allowed to read or change: (accepted names, path, display name)
 FOLDERS = [
     ({"documents", "document", "mes documents"}, Path.home() / "Documents", "Documents"),
     ({"telechargements", "telechargement", "downloads"}, Path.home() / "Downloads", "Téléchargements"),
     ({"bureau", "desktop"}, Path.home() / "Desktop", "Bureau"),
 ]
-MAX_FILE_READ = 4000  # caractères lus au maximum dans un fichier (au-delà : tronqué)
-TOOLS = []  # rempli automatiquement par @tool, puis passé à ask_model par les interfaces
+MAX_FILE_READ = 4000  # max characters read from a file (the rest is cut off)
+TOOLS = []  # filled in by @tool, then handed to ask_model by the front ends
 
 
 def tool(label):
-    """Décorateur : enregistre la fonction comme outil et lui associe un libellé."""
+    """Decorator: registers the function as a tool and attaches a status label to it."""
     def register(func):
         func.label = label
         TOOLS.append(func)
@@ -57,7 +63,7 @@ def tool(label):
     return register
 
 
-# --- Connaissances ---
+# --- Knowledge ---
 
 @tool("🌐 Recherche web...")
 def recherche_web(requete: str) -> str:
@@ -97,36 +103,36 @@ def meteo(ville: str, jour: str = "aujourd'hui") -> str:
         ville: Le nom de la ville (vide = la ville de l'utilisateur, trouvée automatiquement)
         jour: « aujourd'hui » (temps actuel), « demain » ou « après-demain »
     """
-    # Service gratuit wttr.in, sans clé d'API (sans ville : localisation d'après la connexion)
+    # wttr.in is free and needs no API key (no city = located from your Internet connection)
     day = FORECAST_DAYS.get(jour.lower().strip().replace(" ", "-"))
     try:
         if day is None:
-            # Temps actuel. Les %x sont les codes de format de wttr.in :
-            # %l lieu, %C ciel, %t température, %f ressenti, %w vent, %h humidité
+            # Current weather. The %x bits are wttr.in format codes:
+            # %l place, %C sky, %t temperature, %f feels like, %w wind, %h humidity
             fmt = quote("%l : %C, %t (ressenti %f), vent %w, humidité %h", safe="%")
             with urlopen(Request(f"https://wttr.in/{quote(ville)}?format={fmt}&lang=fr",
                                  headers={"User-Agent": "curl"}), timeout=8) as resp:
                 return resp.read().decode("utf-8").strip()
-        # Prévision : données détaillées (JSON), 8 relevés par jour (toutes les 3 h)
+        # Forecast: detailed data (JSON), 8 readings per day (every 3 hours)
         with urlopen(Request(f"https://wttr.in/{quote(ville)}?format=j1&lang=fr",
                              headers={"User-Agent": "curl"}), timeout=8) as resp:
             data = json.loads(resp.read())
         forecast = data["weather"][day]
         place = ville or data["nearest_area"][0]["areaName"][0]["value"]
         sky = lambda i: forecast["hourly"][i]["lang_fr"][0]["value"].strip().lower()
-        rain = max(int(h["chanceofrain"]) for h in forecast["hourly"][2:7])  # de 6 h à 18 h
+        rain = max(int(h["chanceofrain"]) for h in forecast["hourly"][2:7])  # from 6 am to 6 pm
         return (f"{jour.capitalize()} à {place} : de {forecast['mintempC']} à {forecast['maxtempC']} °C, "
                 f"matin {sky(3)}, après-midi {sky(5)}, risque de pluie {rain} %.")
     except Exception as e:
         return f"Météo indisponible : {e}"
 
 
-HOME_CITY = ""  # ville du briefing ; vide = trouvée automatiquement d'après la connexion Internet
+HOME_CITY = ""  # city for the briefing; empty = worked out from your Internet connection
 
 
 def build_briefing(hello="Bonjour"):
-    """Le point du jour, en quelques phrases : date, heure, météo locale, rappels du jour.
-    Construit sans le modèle : rapide, et aucun risque d'information inventée."""
+    """The daily briefing in a few sentences: date, time, local weather, today's reminders.
+    Built without the model: it's fast, and nothing can be made up."""
     now = datetime.now()
     parts = [f"{greeting(hello)} Nous sommes {now_text().replace(',', ', il est')}."]
     weather = meteo(HOME_CITY)
@@ -152,17 +158,17 @@ def briefing() -> str:
 def etat_pc() -> str:
     """Donne l'état du PC : batterie, utilisation du processeur, mémoire vive, espace disque.
     À utiliser pour « comment va le PC ? », « il me reste combien de batterie ? », « le disque est plein ? »."""
-    cpu = psutil.cpu_percent(interval=0.5)  # mesuré sur une demi-seconde
+    cpu = psutil.cpu_percent(interval=0.5)  # measured over half a second
     ram = psutil.virtual_memory()
     disk = psutil.disk_usage("C:\\")
     parts = [f"processeur utilisé à {cpu:.0f} %",
              f"mémoire vive utilisée à {ram.percent:.0f} % ({ram.available / 1e9:.1f} Go libres)",
              f"disque C : {disk.free / 1e9:.0f} Go libres sur {disk.total / 1e9:.0f}"]
-    battery = psutil.sensors_battery()  # None sur un PC fixe
+    battery = psutil.sensors_battery()  # None on a desktop PC
     if battery:
         if battery.power_plugged:
             status = "en charge"
-        elif battery.secsleft > 0:  # négatif quand Windows ne sait pas estimer
+        elif battery.secsleft > 0:  # negative when Windows can't estimate it
             status = f"environ {duree_texte(battery.secsleft)} d'autonomie"
         else:
             status = "sur batterie"
@@ -170,7 +176,7 @@ def etat_pc() -> str:
     return "État du PC : " + " ; ".join(parts) + "."
 
 
-# Calcul sûr : on analyse l'expression au lieu de l'exécuter (eval exécuterait n'importe quel code)
+# Safe math: we parse the expression instead of running it (eval would run any code at all)
 OPERATIONS = {ast.Add: operator.add, ast.Sub: operator.sub, ast.Mult: operator.mul,
               ast.Div: operator.truediv, ast.Pow: operator.pow, ast.Mod: operator.mod,
               ast.FloorDiv: operator.floordiv, ast.USub: operator.neg, ast.UAdd: operator.pos}
@@ -180,7 +186,7 @@ CONSTANTS = {"pi": math.pi, "e": math.e}
 
 
 def _evaluate(node):
-    """Calcule un nœud de l'expression ; refuse tout ce qui n'est pas du calcul."""
+    """Compute one node of the expression; refuse anything that isn't plain math."""
     if isinstance(node, ast.Constant) and isinstance(node.value, (int, float)):
         return node.value
     if isinstance(node, ast.Name) and node.id in CONSTANTS:
@@ -206,7 +212,7 @@ def calculer(expression: str) -> str:
         expression: L'expression, par exemple « (12.5 + 3) * 4 », « 2 ** 10 » ou « sqrt(144) »
     """
     text = expression.replace("×", "*").replace("÷", "/").replace("^", "**")
-    text = re.sub(r"(\d),(\d)", r"\1.\2", text)  # virgule décimale française : 3,5 -> 3.5
+    text = re.sub(r"(\d),(\d)", r"\1.\2", text)  # French decimal comma: 3,5 -> 3.5
     try:
         result = _evaluate(ast.parse(text, mode="eval").body)
     except ZeroDivisionError:
@@ -224,11 +230,11 @@ def heure_et_date() -> str:
     return now_text()
 
 
-# --- Minuteurs et rappels (voir jarvis_reminders.py) ---
+# --- Timers and reminders (see jarvis_reminders.py) ---
 
 def parse_heure(texte):
-    """« 18:30 », « 18h30 », « 18h », « 8 h 05 » -> (heures, minutes), ou None."""
-    # heures, puis éventuellement « h » ou « : » suivi des minutes
+    """"18:30", "18h30", "18h", "8 h 05" -> (hours, minutes), or None."""
+    # hours, then optionally "h" or ":" followed by the minutes
     match = re.fullmatch(r"\s*(\d{1,2})\s*(?:(?:h|:)\s*(\d{2})?)?\s*", texte.lower())
     if not match:
         return None
@@ -238,7 +244,7 @@ def parse_heure(texte):
 
 
 def duree_texte(seconds):
-    """3725 -> « 1 h 2 min »."""
+    """3725 -> "1 h 2 min"."""
     minutes = max(1, round(seconds / 60))
     return f"{minutes // 60} h {minutes % 60} min" if minutes >= 60 else f"{minutes} min"
 
@@ -255,17 +261,17 @@ def creer_rappel(message: str, minutes: float = 0, heure: str = "") -> str:
         heure: Heure précise au format HH:MM, par exemple « 18:30 » (vide si minutes est donné)
     """
     now = datetime.now()
-    heure = str(heure).strip() if heure not in (None, "", 0) else ""  # le modèle envoie parfois un nombre
+    heure = str(heure).strip() if heure not in (None, "", 0) else ""  # the model sometimes sends a number
     if heure:
         parsed = parse_heure(heure)
         if not parsed:
             return f"Heure « {heure} » incompréhensible : utiliser le format HH:MM."
-        # Le modèle coupe parfois « 18h30 » en heure=18 et minutes=30 : on recombine
+        # The model sometimes splits "18h30" into heure=18 and minutes=30, so we put it back together
         if parsed[1] == 0 and heure.isdigit() and minutes and 0 < float(minutes) < 60:
             parsed = (parsed[0], int(float(minutes)))
         due = now.replace(hour=parsed[0], minute=parsed[1], second=0, microsecond=0)
         if due <= now:
-            due += timedelta(days=1)  # heure déjà passée aujourd'hui : c'est pour demain
+            due += timedelta(days=1)  # that time has already passed today, so it's for tomorrow
     elif minutes and float(minutes) > 0:
         due = now + timedelta(minutes=float(minutes))
     else:
@@ -300,10 +306,10 @@ def annuler_rappel(recherche: str) -> str:
     return "Annulé : " + ", ".join(f"« {i['message']} »" for i in removed)
 
 
-# --- Fichiers (limités à trois dossiers : Documents, Téléchargements, Bureau) ---
+# --- Files (limited to three folders: Documents, Downloads, Desktop) ---
 
 def folder(dossier):
-    """Nom dit par l'utilisateur -> (chemin, nom affiché), ou (None, message d'erreur)."""
+    """Folder name as the user said it -> (path, display name), or (None, error message)."""
     key = dossier.lower().strip().replace("é", "e").replace("è", "e")
     for names, path, label in FOLDERS:
         if key in names:
@@ -312,8 +318,8 @@ def folder(dossier):
 
 
 def safe_file(nom, dossier):
-    """Chemin d'un fichier DANS le dossier autorisé (Path(nom).name empêche d'en sortir
-    avec « ../ »), ou (None, message d'erreur)."""
+    """Path of a file INSIDE the allowed folder (Path(nom).name stops anyone from escaping
+    it with "../"), or (None, error message)."""
     path, label = folder(dossier)
     return (path / Path(nom).name, label) if path else (None, label)
 
@@ -391,18 +397,18 @@ def ajouter_au_fichier(nom: str, texte: str, dossier: str = "documents") -> str:
         return label
     if not path.is_file():
         return f"Fichier {path.name} introuvable dans {label} (utiliser creer_fichier)."
-    # Si le fichier ne finit pas par un retour à la ligne, on en ajoute un avant le texte
+    # If the file doesn't end with a newline, add one before the new text
     ends_with_newline = path.stat().st_size == 0 or path.read_bytes()[-1:] == b"\n"
-    with open(path, "a", encoding="utf-8") as f:  # "a" = ajout à la fin, jamais d'effacement
+    with open(path, "a", encoding="utf-8") as f:  # "a" = append at the end, never erase
         f.write(("" if ends_with_newline else "\n") + texte + "\n")
     return f"Texte ajouté à la fin de {path.name}."
 
 
-# --- Contrôle du PC ---
+# --- Controlling the PC ---
 
-# Applications courantes : nom dit par l'utilisateur -> commande Windows (« start <commande> »).
-# Les entrées finissant par « : » sont des liens d'application (ouverts même si l'appli
-# vient du Microsoft Store). Tout ce qui n'est pas ici est cherché dans le menu Démarrer.
+# Common apps: name as the user says it -> Windows command ("start <command>").
+# Entries ending with ":" are app links (they work even for Microsoft Store apps).
+# Anything not listed here gets looked up in the Start menu.
 APPS = {
     "bloc-notes": "notepad", "notepad": "notepad",
     "calculatrice": "calc",
@@ -417,7 +423,7 @@ APPS = {
 }
 
 
-# Dossiers où Windows range les raccourcis des logiciels installés
+# Where Windows keeps the shortcuts of installed software
 SHORTCUT_DIRS = [
     Path(os.environ.get("PROGRAMDATA", r"C:\ProgramData")) / "Microsoft/Windows/Start Menu/Programs",
     Path(os.environ.get("APPDATA", "")) / "Microsoft/Windows/Start Menu/Programs",
@@ -426,18 +432,18 @@ SHORTCUT_DIRS = [
     Path.home() / "OneDrive/Desktop",
     Path(os.environ.get("PUBLIC", r"C:\Users\Public")) / "Desktop",
 ]
-IGNORED_WORDS = ("uninstall", "désinstaller", "desinstaller")  # raccourcis à ne jamais lancer
+IGNORED_WORDS = ("uninstall", "désinstaller", "desinstaller")  # shortcuts we never launch
 
-# Surnoms -> nom du raccourci (quand le jeu se lance via un launcher au nom différent)
+# Nicknames -> shortcut name (for games that start through a launcher with another name)
 SHORTCUT_ALIASES = {
     "league of legends": "client riot", "lol": "client riot", "valorant": "client riot",
     "obs": "obs studio",
 }
 
 
-@functools.lru_cache(maxsize=1)  # le scan n'est fait qu'une fois par lancement de Jarvis
+@functools.lru_cache(maxsize=1)  # only scanned once per Jarvis session
 def installed_apps():
-    """Tous les raccourcis trouvés : {nom en minuscules: chemin du .lnk}."""
+    """Every shortcut found: {lowercase name: path of the .lnk}."""
     apps = {}
     for folder in SHORTCUT_DIRS:
         if not folder.is_dir():
@@ -450,17 +456,17 @@ def installed_apps():
 
 
 def find_installed_app(name):
-    """Trouve le raccourci le plus proche du nom demandé, ou None."""
+    """Find the shortcut closest to the requested name, or None."""
     apps = installed_apps()
     name = SHORTCUT_ALIASES.get(name, name)
-    # 1. Nom exact
+    # 1. Exact name
     if name in apps:
         return apps[name]
-    # 2. Nom contenu : « photoshop » trouve « Adobe Photoshop 2024 » (le plus court gagne)
+    # 2. Name contained: "photoshop" finds "Adobe Photoshop 2024" (shortest wins)
     contains = sorted((n for n in apps if name in n), key=len)
     if contains:
         return apps[contains[0]]
-    # 3. Faute de frappe : « discrod » trouve « discord »
+    # 3. Typo: "discrod" finds "discord"
     close = difflib.get_close_matches(name, apps, n=1, cutoff=0.75)
     return apps[close[0]] if close else None
 
@@ -473,17 +479,17 @@ def ouvrir_application(nom: str) -> str:
         nom: Le nom de l'application
     """
     key = nom.lower().strip()
-    # 1. Application courante connue (liste APPS)
+    # 1. A common app we know about (the APPS list)
     target = APPS.get(key)
     if not target:
-        # 2. Raccourci du menu Démarrer ou du Bureau
+        # 2. A Start menu or desktop shortcut
         shortcut = find_installed_app(key)
         if shortcut:
             os.startfile(shortcut)
             return f"{shortcut.stem} lancé."
-        # 3. Nom connu contenu dans la demande (« ouvre google chrome » -> chrome)
+        # 3. A known name inside the request ("google chrome" -> chrome)
         target = next((cmd for alias, cmd in APPS.items() if alias in key), None)
-    # 4. Programme présent dans le PATH (nom simple uniquement : pas d'injection de commande)
+    # 4. A program on the PATH (plain names only, so no command injection)
     if not target and re.fullmatch(r"[\w.-]+", key) and shutil.which(key):
         target = key
     if not target:
@@ -494,13 +500,13 @@ def ouvrir_application(nom: str) -> str:
     return f"{nom} lancé."
 
 
-# Programmes à ne JAMAIS fermer : Windows lui-même, Ollama (le cerveau), Python (Jarvis !)
+# Programs we must NEVER close: Windows itself, Ollama (the brain), Python (that's Jarvis!)
 PROTECTED = {"explorer", "python", "pythonw", "ollama", "ollama app", "svchost", "system", "csrss",
              "wininit", "winlogon", "lsass", "services", "dwm", "smss", "conhost", "sihost",
              "fontdrvhost", "taskhostw", "runtimebroker", "searchhost", "startmenuexperiencehost",
              "shellexperiencehost", "textinputhost", "ctfmon", "registry", "audiodg"}
 
-# Nom dit par l'utilisateur -> nom(s) du programme en cours d'exécution (sans « .exe »)
+# Name as the user says it -> name(s) of the running program (without ".exe")
 PROCESS_NAMES = {
     "word": ["winword"], "powerpoint": ["powerpnt"], "edge": ["msedge"],
     "vs code": ["code"], "vscode": ["code"], "visual studio code": ["code"],
@@ -512,12 +518,12 @@ PROCESS_NAMES = {
 }
 
 
-# Programmes où l'on peut avoir du travail non enregistré : jamais de fermeture forcée
+# Programs that might hold unsaved work: never force-closed
 NEVER_FORCE = {"winword", "excel", "powerpnt", "notepad", "code", "mspaint", "onenote", "outlook"}
 
 
 def running_programs():
-    """Noms (en minuscules, sans .exe) des programmes en cours d'exécution."""
+    """Names (lowercase, no .exe) of the programs currently running."""
     out = subprocess.run(["tasklist", "/FO", "CSV", "/NH"], capture_output=True, text=True,
                          errors="replace", creationflags=subprocess.CREATE_NO_WINDOW).stdout
     return {row[0].lower().removesuffix(".exe") for row in csv.reader(out.splitlines()) if row}
@@ -535,29 +541,29 @@ def fermer_application(nom: str, forcer: bool = False) -> str:
     compact = key.replace(" ", "")
     running = running_programs() - PROTECTED
     wanted = PROCESS_NAMES.get(key, [key, compact])
-    # Correspondance STRICTE : un nom trop vague fermerait le mauvais programme (« spotify »
-    # visait « spotifyxboxgamebarwebview », un module de la Xbox Game Bar).
+    # STRICT matching: a loose match closes the wrong program ("spotify" once hit
+    # "spotifyxboxgamebarwebview", a piece of the Xbox Game Bar).
     targets = [p for p in running if p in wanted]
-    if not targets:  # presque exact : « obs » -> « obs64 » (3 caractères de plus au maximum)
+    if not targets:  # almost exact: "obs" -> "obs64" (at most 3 extra characters)
         targets = [p for p in running if p.startswith(compact) and len(p) - len(compact) <= 3]
-    if not targets:  # faute de frappe : « discrod » -> « discord »
+    if not targets:  # typo: "discrod" -> "discord"
         targets = difflib.get_close_matches(compact, running, n=1, cutoff=0.85)
     if not targets:
         return f"Aucune application « {nom} » n'est ouverte."
 
     def kill(programs, force):
-        # Sans /F : Windows demande poliment à l'appli de se fermer (comme cliquer sur la croix),
-        # elle peut donc proposer d'enregistrer. Avec /F : fermeture immédiate, sans question.
+        # Without /F, Windows politely asks the app to close (like clicking its X), so it
+        # gets a chance to offer saving. With /F it's killed on the spot, no questions asked.
         for program in programs:
             command = ["taskkill", "/IM", f"{program}.exe", "/T"] + (["/F"] if force else [])
             subprocess.run(command, capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW)
-        time.sleep(2)  # laisse le temps de se fermer
+        time.sleep(2)  # give it time to close
         return [p for p in programs if p in running_programs()]
 
-    # Toujours une fermeture normale d'abord (le modèle demande parfois « forcer » sans raison)
+    # Always try a normal close first (the model sometimes asks to force it for no reason)
     still_open = kill(targets, force=False)
     if still_open and forcer:
-        # Forcer seulement si aucun travail ne peut être perdu (jamais Word, Bloc-notes...)
+        # Only force it when no work can be lost (never Word, Notepad...)
         still_open = kill([p for p in still_open if p not in NEVER_FORCE], force=True) + \
                      [p for p in still_open if p in NEVER_FORCE]
     if still_open:
@@ -566,9 +572,9 @@ def fermer_application(nom: str, forcer: bool = False) -> str:
     return f"{', '.join(targets)} fermé."
 
 
-# --- Musique ---
+# --- Music ---
 
-VK_MEDIA_NEXT, VK_MEDIA_PREV, VK_MEDIA_PLAY_PAUSE = 0xB0, 0xB1, 0xB3  # touches multimédia
+VK_MEDIA_NEXT, VK_MEDIA_PREV, VK_MEDIA_PLAY_PAUSE = 0xB0, 0xB1, 0xB3  # media keys
 
 
 @tool("🎵 Contrôle de la musique...")
@@ -581,13 +587,13 @@ def controle_musique(action: str) -> str:
         action: « pause », « lecture », « suivant » ou « precedent »
     """
     action = action.lower().strip()
-    if action.startswith(("suiv", "next", "passe", "proch")):  # « prochain » avant le test « pr »
+    if action.startswith(("suiv", "next", "passe", "proch")):  # check "prochain" before the "pr" test
         _press(VK_MEDIA_NEXT)
         return "Morceau suivant."
     if action.startswith(("pr", "prev", "reviens")):  # précédent / precedent / previous
         _press(VK_MEDIA_PREV)
         return "Morceau précédent."
-    _press(VK_MEDIA_PLAY_PAUSE)  # une seule touche pour pause ET reprise (bascule)
+    _press(VK_MEDIA_PLAY_PAUSE)  # the same key pauses and resumes (it toggles)
     return "Lecture mise en pause ou reprise."
 
 
@@ -604,21 +610,21 @@ def jouer_musique(recherche: str, plateforme: str = "youtube") -> str:
         return ("Aucune chanson précisée. Pour mettre en pause ou passer à la suivante, "
                 "utiliser l'outil controle_musique.")
     if "spotify" in plateforme.lower():
-        # Sans compte développeur Spotify, on peut ouvrir la recherche mais pas lancer la lecture
+        # Without a Spotify developer account we can open the search, but not start playback
         os.startfile(f"spotify:search:{quote(recherche)}")
         return f"Recherche « {recherche} » ouverte dans Spotify : il reste à cliquer sur le titre."
     url = find_youtube_video(recherche)
     if url:
-        webbrowser.open(url)  # une vidéo YouTube se lance toute seule à l'ouverture
+        webbrowser.open(url)  # a YouTube video starts playing by itself when opened
         return f"Lecture de « {recherche} » sur YouTube : {url}"
-    # Dernier recours : la page de résultats YouTube (il faudra cliquer sur une vidéo)
+    # Last resort: the YouTube results page (you'll have to click a video)
     webbrowser.open(f"https://www.youtube.com/results?search_query={quote_plus(recherche)}")
     return f"Résultats YouTube pour « {recherche} » ouverts : il reste à choisir la vidéo."
 
 
 def find_youtube_video(recherche):
-    """Adresse de la 1re vidéo YouTube trouvée, ou None. Le service de recherche est capricieux :
-    on essaie la recherche de vidéos, puis une recherche web classique filtrée sur YouTube."""
+    """URL of the first YouTube video found, or None. The search service is flaky,
+    so we try a video search first, then a regular web search filtered on YouTube."""
     attempts = [lambda d: d.videos(recherche, max_results=8),
                 lambda d: d.text(f"{recherche} youtube", max_results=10)]
     for search in attempts:
@@ -629,7 +635,7 @@ def find_youtube_video(recherche):
                     if "youtube.com/watch" in link:
                         return link
         except Exception:
-            continue  # « aucun résultat » ou service indisponible : on passe à l'essai suivant
+            continue  # "no results" or service down: move on to the next attempt
     return None
 
 
@@ -641,7 +647,7 @@ def ouvrir_site(adresse_ou_recherche: str) -> str:
         adresse_ou_recherche: Une URL (ex: youtube.com) ou des mots à rechercher
     """
     target = adresse_ou_recherche.strip()
-    # Ressemble à une adresse (« youtube.com », « https://x.fr/page ») ? Sinon : recherche Google
+    # Does it look like an address ("youtube.com", "https://x.fr/page")? If not, search Google
     if re.fullmatch(r"(https?://)?[\w-]+(\.[\w-]+)+(/\S*)?", target):
         url = target if target.startswith("http") else f"https://{target}"
     else:
@@ -650,22 +656,22 @@ def ouvrir_site(adresse_ou_recherche: str) -> str:
     return f"Ouvert : {url}"
 
 
-# Le volume est piloté en simulant les touches multimédia du clavier (aucune dépendance).
-# Codes des touches Windows : muet, volume -, volume +
+# Fallback volume control: we simulate the keyboard's media keys (no dependencies).
+# Windows key codes: mute, volume down, volume up
 VK_VOLUME_MUTE, VK_VOLUME_DOWN, VK_VOLUME_UP = 0xAD, 0xAE, 0xAF
 
 
 def _press(vk, times=1):
-    """Appuie puis relâche une touche, `times` fois."""
+    """Press and release a key, `times` times."""
     for _ in range(times):
         ctypes.windll.user32.keybd_event(vk, 0, 0, 0)
         ctypes.windll.user32.keybd_event(vk, 0, 2, 0)  # KEYEVENTF_KEYUP
 
 
 def speakers():
-    """Commande du volume des haut-parleurs (pycaw), ou None si indisponible.
-    pycaw passe par COM (Windows), qui doit être initialisé dans CHAQUE thread qui l'utilise :
-    les outils tournent dans le thread de réponse, pas dans celui de la fenêtre."""
+    """Speaker volume control (pycaw), or None if it's not available.
+    pycaw goes through COM (Windows), which has to be initialized in EVERY thread that uses it:
+    tools run in the answer thread, not the window's."""
     try:
         import comtypes
         from pycaw.pycaw import AudioUtilities
@@ -685,10 +691,10 @@ def regler_volume(niveau: int) -> str:
     niveau = max(0, min(100, int(niveau)))
     control = speakers()
     if control:
-        control.SetMasterVolumeLevelScalar(niveau / 100, None)  # réglage direct et exact
+        control.SetMasterVolumeLevelScalar(niveau / 100, None)  # direct and exact
         if niveau > 0:
-            control.SetMute(0, None)  # régler le volume sous-entend qu'on veut entendre
-    else:  # secours : touches du clavier (chaque appui = 2 %, on descend à 0 puis on remonte)
+            control.SetMute(0, None)  # setting the volume implies you want to hear something
+    else:  # fallback: keyboard keys (each press = 2%, so go down to 0 and back up)
         _press(VK_VOLUME_DOWN, 50)
         _press(VK_VOLUME_UP, round(niveau / 2))
     return f"Volume réglé à {niveau} %."

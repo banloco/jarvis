@@ -1,37 +1,37 @@
-"""Contrôle par gestes de la main, via la webcam.
+"""Hand gesture control through the webcam.
 
-Deux familles de gestes :
+Two kinds of gestures:
 
-1. GESTES FIGÉS (poing, main ouverte, pouce levé...) : appris sur TES exemples.
-   - MediaPipe (modèle de Google, déjà entraîné) repère 21 points sur la main :
-     poignet, articulations et bouts des doigts.
-   - Un petit réseau de neurones, entraîné sur tes exemples, reconnaît le geste
-     à partir de la position de ces points et de l'angle des doigts.
+1. POSES (fist, open hand, thumbs up...): learned from YOUR examples.
+   - MediaPipe (a model from Google, already trained) finds 21 points on the hand:
+     the wrist, the knuckles and the fingertips.
+   - A small neural network, trained on your examples, recognizes the pose from where
+     those points are and how the fingers are bent.
 
-2. MOUVEMENTS (aucun entraînement nécessaire, calculés à partir du déplacement) :
-   - glisser la main vers la gauche / droite / le haut / le bas ;
-   - pincer pouce + index puis monter / descendre la main : règle le volume en continu.
+2. MOVES (no training needed, worked out from how the hand moves):
+   - swipe left / right / up / down;
+   - pinch thumb and index, then move your hand up or down: changes the volume smoothly.
 
-Utilisation en ligne de commande (depuis le dossier Jarvis) :
-    python jarvis_gestures.py collecter poing      # enregistre des exemples du geste « poing »
-    python jarvis_gestures.py lister               # nombre d'exemples par geste
-    python jarvis_gestures.py supprimer poing      # efface les exemples d'un geste
-    python jarvis_gestures.py entrainer            # entraîne le modèle sur tous les exemples
-    python jarvis_gestures.py tester               # reconnaissance en direct, pour vérifier
-    python jarvis_gestures.py importer             # ajoute des milliers d'exemples publics (HaGRID)
+Command line (from the Jarvis folder):
+    python jarvis_gestures.py collecter poing      # record examples of the "poing" (fist) gesture
+    python jarvis_gestures.py lister               # how many examples per gesture
+    python jarvis_gestures.py supprimer poing      # delete a gesture's examples
+    python jarvis_gestures.py entrainer            # train the model on all the examples
+    python jarvis_gestures.py tester               # live recognition, to check how it does
+    python jarvis_gestures.py importer             # add thousands of public examples (HaGRID)
 
-HaGRID : base publique de gestes filmés par des milliers de personnes (licence CC BY-SA 4.0,
-https://github.com/hukenovs/hagrid). « importer » en extrait poing, main ouverte, pouces,
-victoire, rock et « rien ». Puis « entrainer --hagrid » ajoute les gestes que tu n'as pas
-enregistrés toi-même. Tes propres exemples restent plus fiables : sans --hagrid par défaut.
+HaGRID is a public dataset of gestures filmed by thousands of people (CC BY-SA 4.0 license,
+https://github.com/hukenovs/hagrid). "importer" pulls out fist, open hand, thumbs, peace,
+rock and "nothing". Then "entrainer --hagrid" adds the gestures you haven't recorded yourself.
+Your own examples are more reliable, which is why --hagrid is off by default.
 
-Conseils pour de bons exemples :
-- « rien » est indispensable et doit être VARIÉ : main détendue, de profil, à moitié
-  fermée, qui bouge, qui tape au clavier... Tout ce qui ne doit PAS déclencher d'action.
-- Pour chaque geste, varie la distance, l'angle, et alterne main gauche / droite.
-- Après l'entraînement, la liste des confusions indique quel geste recollecter.
+Tips for good examples:
+- "rien" (nothing) is essential and needs VARIETY: relaxed hand, side view, half closed,
+  moving, typing on the keyboard... Anything that should NOT trigger an action.
+- For each gesture, vary the distance and the angle, and switch between left and right hand.
+- After training, the list of mix-ups tells you which gesture to record again.
 
-Dans l'interface, le bouton ✋ active la surveillance (voir GESTURE_ACTIONS plus bas).
+In the window, the GESTES button turns watching on (see GESTURE_ACTIONS below).
 """
 import sys
 import threading
@@ -49,74 +49,74 @@ BASE_DIR = Path(__file__).resolve().parent
 HAND_MODEL = BASE_DIR / "models" / "hand_landmarker.task"
 HAND_MODEL_URL = ("https://storage.googleapis.com/mediapipe-models/hand_landmarker/"
                   "hand_landmarker/float16/latest/hand_landmarker.task")
-DATA_FILE = BASE_DIR / "gestures_data.npz"          # tes exemples (points de la main + nom du geste)
-GESTURE_MODEL = BASE_DIR / "gestures_model.joblib"  # le modèle entraîné
-MODEL_VERSION = 3   # à changer si le calcul des caractéristiques change (force un réentraînement)
-DATA_FORMAT = 2     # format des exemples stockés : 21 points (x, y), proportions réelles de l'image
+DATA_FILE = BASE_DIR / "gestures_data.npz"          # your examples (hand points + gesture name)
+GESTURE_MODEL = BASE_DIR / "gestures_model.joblib"  # the trained model
+MODEL_VERSION = 3   # bump this when the feature computation changes (forces retraining)
+DATA_FORMAT = 2     # format of the saved examples: 21 points (x, y), true image proportions
 
-# Données publiques HaGRID (des milliers de personnes) : voir la commande « importer »
+# Public HaGRID data (thousands of people): see the "importer" command
 HAGRID_ZIP = BASE_DIR / "data" / "hagrid" / "annotations.zip"
 HAGRID_FILE = BASE_DIR / "data" / "hagrid" / "hagrid_gestures.npz"
 HAGRID_URL = ("https://rndml-team-cv.obs.ru-moscow-1.hc.sbercloud.ru/datasets/hagrid_v2/"
               "annotations_with_landmarks/annotations.zip")
-HAGRID_LABELS = {  # nom HaGRID -> nom de geste Jarvis
+HAGRID_LABELS = {  # HaGRID name -> Jarvis gesture name
     "fist": "poing", "palm": "main_ouverte", "like": "pouce_haut", "dislike": "pouce_bas",
     "peace": "victoire", "rock": "rock", "no_gesture": "rien",
 }
-HAGRID_PER_GESTURE = 3000  # exemples importés par geste
-HAGRID_ASPECT = 4 / 3      # largeur / hauteur supposée des photos HaGRID (taille non fournie ;
-                           # 9:16, 1:1, 4:3 et 16:9 testés : 4:3 légèrement meilleur, écarts < 2 %)
+HAGRID_PER_GESTURE = 3000  # examples imported per gesture
+HAGRID_ASPECT = 4 / 3      # assumed width / height of the HaGRID photos (not provided;
+                           # we tried 9:16, 1:1, 4:3 and 16:9: 4:3 was slightly better, all within 2%)
 
-# Gestes figés
-NEUTRAL = "rien"           # geste qui ne déclenche jamais rien
-SAMPLES_PER_GESTURE = 300  # exemples enregistrés par défaut par « collecter »
-MIN_SAMPLES = 50           # minimum par geste pour entraîner
-COUNTDOWN = 3              # secondes pour mettre la main en place avant l'enregistrement
-AUGMENT_COPIES = 3         # copies déformées de chaque exemple ajoutées à l'entraînement
-CONFIDENCE = 0.85          # certitude minimale (0 à 1) pour accepter un geste
-VOTE_FRAMES = 5            # images sur lesquelles on moyenne la décision (~0,3 s)
-HOLD_SECONDS = 0.5         # durée pendant laquelle le geste doit être tenu
-COOLDOWN = 2.0             # délai minimal entre deux déclenchements d'un geste figé
+# Poses
+NEUTRAL = "rien"           # the gesture that never triggers anything
+SAMPLES_PER_GESTURE = 300  # examples recorded by default by "collecter"
+MIN_SAMPLES = 50           # minimum per gesture before training
+COUNTDOWN = 3              # seconds to get your hand in place before recording
+AUGMENT_COPIES = 3         # slightly distorted copies of each example added for training
+CONFIDENCE = 0.85          # minimum certainty (0 to 1) to accept a gesture
+VOTE_FRAMES = 5            # frames we average the decision over (~0.3 s)
+HOLD_SECONDS = 0.5         # how long the gesture has to be held
+COOLDOWN = 2.0             # minimum time between two pose triggers
 
-# Mouvements (distances en fraction de la largeur / hauteur de l'image)
-SWIPE_DISTANCE = 0.20      # déplacement minimal pour un glissement (20 % de l'image)
-SWIPE_WINDOW = 0.4         # ... réalisé en moins de 0,4 s
-SWIPE_COOLDOWN = 1.0       # délai entre deux glissements
-HAND_SETTLE = 0.5          # une main qui vient d'apparaître ne compte pas (évite les faux glissements)
-STILL_DISTANCE = 0.05      # en dessous, la main est considérée immobile (geste figé possible)
-PINCH_RATIO = 0.35         # pouce-index plus proches que 35 % de la paume = pincement
-PINCH_HOLD = 0.3           # durée de pincement avant d'entrer en mode volume
-PINCH_STEP = 0.03          # déplacement vertical pour un cran de volume (2 %)
+# Moves (distances as a fraction of the image width / height)
+SWIPE_DISTANCE = 0.20      # minimum travel for a swipe (20% of the image)
+SWIPE_WINDOW = 0.4         # ...done in under 0.4 s
+SWIPE_COOLDOWN = 1.0       # time between two swipes
+HAND_SETTLE = 0.5          # a hand that just appeared doesn't count yet (avoids fake swipes)
+STILL_DISTANCE = 0.05      # below this, the hand counts as still (a pose is possible)
+PINCH_RATIO = 0.35         # thumb and index closer than 35% of the palm = pinch
+PINCH_HOLD = 0.3           # how long to pinch before volume mode kicks in
+PINCH_STEP = 0.03          # vertical travel for one volume step (2%)
 
-WATCH_FPS = 15             # images analysées par seconde en surveillance (économise le processeur)
+WATCH_FPS = 15             # frames analyzed per second while watching (easier on the CPU)
 
-# Numéros des 21 points MediaPipe : 0 = poignet, puis 4 points par doigt (base -> bout)
+# MediaPipe's 21 points: 0 = wrist, then 4 points per finger (base -> tip)
 WRIST = 0
 FINGERS = [[1, 2, 3, 4], [5, 6, 7, 8], [9, 10, 11, 12], [13, 14, 15, 16], [17, 18, 19, 20]]
 TIPS = [4, 8, 12, 16, 20]
-PALM = [0, 5, 9, 13, 17]   # poignet + bases des doigts : le centre de la paume
+PALM = [0, 5, 9, 13, 17]   # wrist + finger bases: the middle of the palm
 
 
-# --- Étage 1 : repérer la main ---
+# --- Step 1: find the hand ---
 
 class HandTracker:
-    """Ouvre la webcam et renvoie, pour chaque image, les 21 points de la main (ou None)."""
+    """Opens the webcam and gives back, for each frame, the 21 points of the hand (or None)."""
 
     def __init__(self):
-        if not HAND_MODEL.exists():  # téléchargé la 1re fois (7,5 Mo)
+        if not HAND_MODEL.exists():  # downloaded the first time (7.5 MB)
             HAND_MODEL.parent.mkdir(exist_ok=True)
             urllib.request.urlretrieve(HAND_MODEL_URL, HAND_MODEL)
         options = vision.HandLandmarkerOptions(
             base_options=BaseOptions(model_asset_path=str(HAND_MODEL)),
-            running_mode=vision.RunningMode.VIDEO,  # suit la main d'une image à l'autre
+            running_mode=vision.RunningMode.VIDEO,  # follows the hand from one frame to the next
             num_hands=1)
         self.landmarker = vision.HandLandmarker.create_from_options(options)
-        self.camera = cv2.VideoCapture(0, cv2.CAP_DSHOW)  # CAP_DSHOW : ouverture rapide sous Windows
+        self.camera = cv2.VideoCapture(0, cv2.CAP_DSHOW)  # CAP_DSHOW opens much faster on Windows
         self.start = time.monotonic()
 
     def read(self):
-        """Retourne (image, main) : image en miroir (comme un selfie),
-        main = (points, largeur/hauteur de l'image) ou None si aucune main n'est visible."""
+        """Returns (image, hand): the image is mirrored (like a selfie),
+        hand = (points, image width/height) or None if no hand is visible."""
         ok, frame = self.camera.read()
         if not ok:
             raise RuntimeError("Webcam indisponible (utilisée par une autre application ?)")
@@ -135,25 +135,25 @@ class HandTracker:
         self.landmarker.close()
 
 
-# --- Étage 2 : décrire la main par des nombres ---
+# --- Step 2: describe the hand with numbers ---
 
 def hand_vector(points, aspect):
-    """Les 21 points -> 42 nombres (x, y de chaque point). C'est ce qui est stocké.
+    """21 points -> 42 numbers (x, y of each point). This is what gets saved.
 
-    - Les coordonnées MediaPipe sont en fraction de la largeur et de la hauteur de l'image :
-      on multiplie x par largeur/hauteur pour retrouver les vraies proportions de la main
-      (sinon, en 640x480, une main paraît plus étroite qu'elle n'est).
-    - La profondeur (z) n'est pas gardée : peu fiable, et absente des données HaGRID.
+    - MediaPipe coordinates are fractions of the image width and height, so we multiply x
+      by width/height to get the hand's real proportions back (otherwise, at 640x480,
+      a hand looks narrower than it is).
+    - Depth (z) is dropped: it isn't reliable, and HaGRID doesn't have it anyway.
     """
     coords = np.array([[p.x * aspect, p.y] for p in points], dtype=np.float32)
-    return (coords - coords[WRIST]).flatten()  # origine = le poignet
+    return (coords - coords[WRIST]).flatten()  # origin = the wrist
 
 
 def canonical(P):
-    """Retourne horizontalement les mains « à l'envers » pour que toutes aient la même
-    orientation (comme une main droite vue de face). Le sens est déduit de la forme de la
-    main : l'index est-il à gauche ou à droite de l'auriculaire, vu depuis le poignet ?
-    Plus fiable que l'étiquette gauche/droite de MediaPipe, qui se trompe parfois."""
+    """Mirror the "backwards" hands so they all face the same way (like a right hand seen
+    from the front). Which way it faces comes from the shape of the hand: is the index to
+    the left or the right of the pinky, seen from the wrist? That turned out more reliable
+    than MediaPipe's left/right label, which is sometimes wrong."""
     index, pinky = P[:, 5] - P[:, WRIST], P[:, 17] - P[:, WRIST]
     flip = index[:, 0] * pinky[:, 1] - index[:, 1] * pinky[:, 0] < 0
     P = P.copy()
@@ -162,17 +162,17 @@ def canonical(P):
 
 
 def enrich(vectors):
-    """Transforme des exemples (42 nombres par ligne) en caractéristiques pour le modèle.
+    """Turn examples (42 numbers per row) into features for the model.
 
-    1. Même orientation pour toutes les mains (voir canonical).
-    2. Mise à l'échelle par la TAILLE DE LA PAUME (poignet -> base du majeur), qui ne change
-       pas quand on plie les doigts. (Diviser par la plus grande distance, comme au début,
-       effaçait la différence entre un poing et une main ouverte.)
-    3. Ajout de mesures qui décrivent directement la forme de la main :
-       - l'angle de chaque articulation (doigt tendu ≈ droit, doigt plié ≈ coudé) : 15 valeurs
-       - la distance de chaque bout de doigt au poignet : 5 valeurs
-       - la distance du pouce aux autres bouts de doigts (pincement, OK...) : 4 valeurs
-       - l'écartement entre doigts voisins : 3 valeurs
+    1. Every hand faces the same way (see canonical).
+    2. Everything is scaled by the SIZE OF THE PALM (wrist -> base of the middle finger),
+       which doesn't change when you bend your fingers. (Dividing by the largest distance,
+       like we did at first, erased the difference between a fist and an open hand.)
+    3. Extra measurements that describe the shape of the hand directly:
+       - the angle at each joint (straight finger ≈ flat, bent finger ≈ sharp): 15 values
+       - the distance from each fingertip to the wrist: 5 values
+       - the distance from the thumb to the other fingertips (pinch, OK sign...): 4 values
+       - the spread between neighboring fingers: 3 values
     """
     P = canonical(np.asarray(vectors, dtype=np.float32).reshape(-1, 21, 2))
     palm = np.linalg.norm(P[:, 9], axis=1)
@@ -181,7 +181,7 @@ def enrich(vectors):
     angles = []
     for finger in FINGERS:
         chain = [WRIST] + finger
-        for a, b, c in zip(chain, chain[1:], chain[2:]):  # angle au point b entre a-b et b-c
+        for a, b, c in zip(chain, chain[1:], chain[2:]):  # angle at point b between a-b and b-c
             u, v = P[:, a] - P[:, b], P[:, c] - P[:, b]
             cos = (u * v).sum(1) / (np.linalg.norm(u, axis=1) * np.linalg.norm(v, axis=1) + 1e-6)
             angles.append(cos)
@@ -192,24 +192,24 @@ def enrich(vectors):
 
 
 def augment(vectors, copies, rng):
-    """Crée des copies légèrement déformées des exemples : main tournée de ±20°,
-    un peu étirée, avec un léger tremblement. Le modèle apprend ainsi à reconnaître
-    un geste même s'il est fait un peu différemment de tes exemples."""
+    """Make slightly distorted copies of the examples: hand rotated by up to ±20°, a bit
+    stretched, with a little jitter. That way the model learns to recognize a gesture
+    even when you do it a bit differently from your examples."""
     P = np.repeat(np.asarray(vectors, dtype=np.float32).reshape(-1, 21, 2), copies, axis=0)
-    theta = rng.uniform(-np.pi / 9, np.pi / 9, len(P))            # rotation dans le plan de l'image
+    theta = rng.uniform(-np.pi / 9, np.pi / 9, len(P))            # rotation within the image plane
     cos, sin = np.cos(theta), np.sin(theta)
     x, y = P[:, :, 0].copy(), P[:, :, 1].copy()
     P[:, :, 0], P[:, :, 1] = cos[:, None] * x - sin[:, None] * y, sin[:, None] * x + cos[:, None] * y
-    P *= 1 + rng.normal(0, 0.05, (len(P), 1, 2))                   # étirement léger par axe
+    P *= 1 + rng.normal(0, 0.05, (len(P), 1, 2))                   # slight stretch along each axis
     scale = np.abs(P).max(axis=(1, 2), keepdims=True)
-    P += rng.normal(0, 0.01, P.shape) * scale                      # tremblement
+    P += rng.normal(0, 0.01, P.shape) * scale                      # jitter
     return P.reshape(len(P), -1)
 
 
-# --- Affichage ---
+# --- Display ---
 
 def draw_hand(frame, points):
-    """Dessine les points et les os de la main sur l'image."""
+    """Draw the points and bones of the hand on the image."""
     h, w = frame.shape[:2]
     xy = [(int(p.x * w), int(p.y * h)) for p in points]
     for c in vision.HandLandmarksConnections.HAND_CONNECTIONS:
@@ -222,17 +222,17 @@ def draw_text(frame, text, line=0, color=(255, 191, 0)):
     cv2.putText(frame, text, (10, 30 + 30 * line), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
 
 
-# --- Données d'entraînement ---
+# --- Training data ---
 
 def load_data():
-    """Retourne (X, y) : tes exemples, un par ligne de X (42 nombres), son nom de geste dans y."""
+    """Returns (X, y): your examples, one per row of X (42 numbers), gesture names in y."""
     if not DATA_FILE.exists():
         return np.empty((0, 42), dtype=np.float32), np.empty(0, dtype=str)
     data = np.load(DATA_FILE)
     X, y = data["X"], data["y"]
     if ("format" not in data.files) or int(data["format"]) < DATA_FORMAT:
-        # Ancien format (x, y, z en fraction d'une image 640x480) : on garde x, y et on
-        # corrige les proportions. Une copie de l'ancien fichier est conservée par sécurité.
+        # Old format (x, y, z as fractions of a 640x480 image): keep x, y and fix the
+        # proportions. A copy of the old file is kept, just in case.
         backup = DATA_FILE.with_name("gestures_data.v1.npz")
         if not backup.exists():
             backup.write_bytes(DATA_FILE.read_bytes())
@@ -247,9 +247,9 @@ def save_data(X, y):
 
 
 def import_hagrid(per_gesture=HAGRID_PER_GESTURE):
-    """Extrait de HaGRID (annotations publiques, ~686 Mo) les points de main des gestes
-    qui nous intéressent (HAGRID_LABELS), en tire `per_gesture` au hasard par geste,
-    et les enregistre dans HAGRID_FILE. Les photos elles-mêmes ne sont pas nécessaires."""
+    """Pull the hand points of the gestures we care about (HAGRID_LABELS) out of HaGRID
+    (public annotations, ~686 MB), pick `per_gesture` at random for each gesture, and save
+    them to HAGRID_FILE. We don't need the photos themselves."""
     import json
     import zipfile
     if not HAGRID_ZIP.exists():
@@ -260,14 +260,14 @@ def import_hagrid(per_gesture=HAGRID_PER_GESTURE):
     by_label = {name: [] for name in HAGRID_LABELS.values()}
     with zipfile.ZipFile(HAGRID_ZIP) as archive:
         for path in archive.namelist():
-            # « test » est gardé de côté par les auteurs de HaGRID ; .ipynb_checkpoints = copies
-            # parasites laissées dans l'archive
+            # "test" is held back by the HaGRID authors; .ipynb_checkpoints are stray
+            # copies left in the archive
             if not path.endswith(".json") or "/test/" in path or ".ipynb_checkpoints" in path:
                 continue
             print(f"  lecture de {path}...", flush=True)
             for entry in json.loads(archive.read(path)).values():
-                # Une image peut contenir plusieurs mains ; « no_gesture » peut apparaître
-                # dans n'importe quel fichier (la 2e main de la personne, souvent)
+                # A photo can have several hands, and "no_gesture" can show up in any file
+                # (often the person's other hand)
                 for hand_label, points in zip(entry["labels"], entry.get("hand_landmarks", [])):
                     if hand_label in HAGRID_LABELS and len(points) == 21:
                         by_label[HAGRID_LABELS[hand_label]].append(points)
@@ -277,7 +277,7 @@ def import_hagrid(per_gesture=HAGRID_PER_GESTURE):
     for name, hands in by_label.items():
         picked = rng.choice(len(hands), min(per_gesture, len(hands)), replace=False)
         P = np.array(hands, dtype=np.float32)[picked]
-        X.append((P - P[:, :1]).reshape(len(P), -1))  # origine = poignet ; x non corrigé ici
+        X.append((P - P[:, :1]).reshape(len(P), -1))  # origin = wrist; x isn't corrected yet
         y += [name] * len(P)
         print(f"  {name:13} {len(hands):7} mains disponibles, {len(P)} gardées")
     np.savez_compressed(HAGRID_FILE, X=np.vstack(X), y=np.array(y))
@@ -285,8 +285,8 @@ def import_hagrid(per_gesture=HAGRID_PER_GESTURE):
 
 
 def load_hagrid(aspect=HAGRID_ASPECT):
-    """Exemples HaGRID importés (vide si « importer » n'a pas été lancé).
-    x est multiplié par `aspect` (largeur / hauteur des photos) pour les vraies proportions."""
+    """The imported HaGRID examples (empty if "importer" hasn't been run).
+    x is multiplied by `aspect` (photo width / height) to get the real proportions."""
     if not HAGRID_FILE.exists():
         return np.empty((0, 42), dtype=np.float32), np.empty(0, dtype=str)
     data = np.load(HAGRID_FILE)
@@ -295,8 +295,8 @@ def load_hagrid(aspect=HAGRID_ASPECT):
 
 
 def collect(name, count=SAMPLES_PER_GESTURE):
-    """Ouvre la webcam et enregistre `count` exemples du geste `name`.
-    ESPACE lance un compte à rebours puis l'enregistrement ; ESPACE à nouveau = pause."""
+    """Open the webcam and record `count` examples of the gesture `name`.
+    SPACE starts a countdown and then recording; SPACE again pauses."""
     tracker = HandTracker()
     samples, recording, countdown_end = [], False, None
     print(f"Geste « {name} » : ESPACE = démarrer/pause, Q = quitter.")
@@ -327,7 +327,7 @@ def collect(name, count=SAMPLES_PER_GESTURE):
                     recording, countdown_end = False, None
                 else:
                     countdown_end = time.monotonic() + COUNTDOWN
-            elif key in (ord("q"), 27):  # Q ou Échap
+            elif key in (ord("q"), 27):  # Q or Esc
                 break
     finally:
         tracker.close()
@@ -360,10 +360,10 @@ def delete(name):
     print(f"{(~keep).sum()} exemples de « {name} » supprimés.")
 
 
-# --- Étage 3 : entraîner et utiliser le modèle ---
+# --- Step 3: train and use the model ---
 
 def new_model():
-    """Normalisation des valeurs + petit réseau de neurones (2 couches cachées)."""
+    """Value scaling + a small neural network (2 hidden layers)."""
     from sklearn.neural_network import MLPClassifier
     from sklearn.pipeline import make_pipeline
     from sklearn.preprocessing import StandardScaler
@@ -373,8 +373,8 @@ def new_model():
 
 
 def fit(X, y, rng, extra=None):
-    """Entraîne un modèle sur tes exemples + leurs copies déformées,
-    plus d'éventuels exemples supplémentaires `extra` = (X, y) (HaGRID, non déformés)."""
+    """Train a model on your examples + their distorted copies, plus any extra
+    examples `extra` = (X, y) (HaGRID, not distorted)."""
     Xa = np.vstack([X, augment(X, AUGMENT_COPIES, rng)])
     ya = np.concatenate([y, np.repeat(y, AUGMENT_COPIES)])
     if extra is not None and len(extra[1]):
@@ -383,15 +383,15 @@ def fit(X, y, rng, extra=None):
 
 
 def train(use_hagrid=False):
-    """Estime la précision SUR TES EXEMPLES, affiche les confusions,
-    puis entraîne et enregistre le modèle final.
+    """Estimate the accuracy ON YOUR EXAMPLES, show the mix-ups, then train and save
+    the final model.
 
-    use_hagrid : ajoute les exemples HaGRID des gestes que tu n'as PAS enregistrés
-    (pouces, victoire, rock...), pour les reconnaître sans les collecter.
-    Mesuré sur tes données (sept. 2026) : tes exemples seuls = 74 % ; avec HaGRID pour les
-    autres gestes = 68 % sur tes propres gestes. Désactivé par défaut pour cette raison.
-    (Mélanger HaGRID à tes propres gestes n'aidait pas non plus : 72 % au mieux, et le
-    « rien » de HaGRID ne ressemble pas au tien.)"""
+    use_hagrid: add the HaGRID examples of the gestures you have NOT recorded
+    (thumbs, peace, rock...), so they're recognized without collecting them.
+    Measured on real data (Sept 2026): your examples alone = 74%; with HaGRID for the
+    other gestures = 68% on your own gestures. That's why it's off by default.
+    (Mixing HaGRID into your own gestures didn't help either: 72% at best, and HaGRID's
+    "nothing" doesn't look like yours.)"""
     from sklearn.metrics import classification_report, confusion_matrix
     from sklearn.model_selection import StratifiedKFold
 
@@ -401,7 +401,7 @@ def train(use_hagrid=False):
         H, hy = load_hagrid()
         if not len(hy):
             return print("Aucune donnée HaGRID : lance d'abord « importer ».")
-        missing = ~np.isin(hy, np.unique(y))  # seulement les gestes que tu n'as pas enregistrés
+        missing = ~np.isin(hy, np.unique(y))  # only the gestures you haven't recorded
         extra = (H[missing], hy[missing])
         print(f"+ HaGRID pour : {', '.join(sorted(set(extra[1])))} ({missing.sum()} exemples)")
     names, counts = np.unique(y, return_counts=True)
@@ -411,9 +411,9 @@ def train(use_hagrid=False):
         return print(f"Chaque geste doit avoir au moins {MIN_SAMPLES} exemples : lance « lister ».")
     rng = np.random.default_rng(0)
 
-    # Validation croisée : 5 fois, on entraîne sur 80 % de tes exemples (+ HaGRID) et on
-    # teste sur les 20 % restants. Les exemples étant enregistrés à la suite, chaque test
-    # porte sur un moment que le modèle n'a pas vu : l'estimation est honnête.
+    # Cross-validation: 5 times over, train on 80% of your examples (+ HaGRID) and test on
+    # the other 20%. Since examples are recorded in a row, each test covers a stretch of
+    # time the model hasn't seen, which keeps the estimate honest.
     predicted = np.empty_like(y, dtype=object)
     for train_idx, test_idx in StratifiedKFold(n_splits=5).split(X, y):
         model = fit(X[train_idx], y[train_idx], rng, extra)
@@ -421,7 +421,7 @@ def train(use_hagrid=False):
     predicted = predicted.astype(str)
     print(classification_report(y, predicted, digits=3, zero_division=0))
 
-    # Les confusions les plus fréquentes : indiquent quel geste recollecter / mieux distinguer
+    # The most common mix-ups tell you which gesture to record again or make more distinct
     matrix = confusion_matrix(y, predicted, labels=names)
     confusions = [(matrix[i, j] / matrix[i].sum(), names[i], names[j])
                   for i in range(len(names)) for j in range(len(names)) if i != j and matrix[i, j]]
@@ -429,41 +429,41 @@ def train(use_hagrid=False):
         if rate >= 0.05:
             print(f"  ⚠ {rate:.0%} des « {real} » pris pour « {guess} »")
 
-    model = fit(X, y, rng, extra)  # modèle final, sur tous les exemples
+    model = fit(X, y, rng, extra)  # final model, on every example
     joblib.dump({"version": MODEL_VERSION, "model": model}, GESTURE_MODEL)
     print(f"Modèle enregistré : {GESTURE_MODEL.name}")
 
 
 def load_model():
-    """Le modèle entraîné, ou None s'il n'existe pas ou date d'une ancienne version."""
+    """The trained model, or None if there isn't one or it's from an older version."""
     if not GESTURE_MODEL.exists():
         return None
     saved = joblib.load(GESTURE_MODEL)
     if not isinstance(saved, dict) or saved.get("version") != MODEL_VERSION:
-        return None  # ancien format : il faut relancer « entrainer »
+        return None  # old format: "entrainer" needs to be run again
     return saved["model"]
 
 
-# --- Étage 4 : reconnaître en direct (gestes figés + mouvements) ---
+# --- Step 4: live recognition (poses + moves) ---
 
 class GestureEngine:
-    """Reçoit la main image après image et renvoie les gestes à déclencher.
-    Aucune action n'est exécutée ici : c'est le rôle de l'appelant (surveillance ou test).
+    """Gets the hand frame after frame and returns the gestures to trigger.
+    It doesn't run any action itself; that's up to the caller (watcher or test).
 
-    Événements possibles : nom d'un geste figé, "glisser_gauche/droite/haut/bas",
-    "pincer" (entrée en mode volume), puis "volume+" / "volume-" à chaque cran."""
+    Possible events: a pose name, "glisser_gauche/droite/haut/bas" (swipes),
+    "pincer" (entering volume mode), then "volume+" / "volume-" at each step."""
 
     def __init__(self, model):
-        self.model = model  # None = seulement les mouvements
+        self.model = model  # None = moves only
         self.reset()
         self.last_fired = self.last_swipe = 0.0
-        self.label, self.confidence = None, 0.0  # dernière prédiction (pour l'affichage)
+        self.label, self.confidence = None, 0.0  # latest prediction (for display)
 
     def reset(self):
-        """Main perdue de vue : on oublie tout ce qui était en cours."""
+        """Hand lost from view: forget whatever was going on."""
         self.votes = deque(maxlen=VOTE_FRAMES)
-        self.track = deque()          # positions récentes de la paume : (temps, x, y)
-        self.hand_since = None        # depuis quand la main est visible
+        self.track = deque()          # recent palm positions: (time, x, y)
+        self.hand_since = None        # when the hand appeared
         self.current, self.since = None, 0.0
         self.pinch_since, self.pinching, self.pinch_y = None, False, 0.0
 
@@ -473,13 +473,13 @@ class GestureEngine:
             self.label, self.confidence = None, 0.0
             return []
         points, aspect = hand
-        xy = np.array([[p.x, p.y] for p in points])  # coordonnées dans l'image (0 à 1)
+        xy = np.array([[p.x, p.y] for p in points])  # coordinates in the image (0 to 1)
         palm_x, palm_y = xy[PALM].mean(axis=0)
         palm_size = np.linalg.norm(xy[9] - xy[WRIST])
         if self.hand_since is None:
             self.hand_since = now
 
-        # 1. Pincement : pouce et index se touchent, index tendu (sinon c'est un poing)
+        # 1. Pinch: thumb and index touching, index stretched out (otherwise it's a fist)
         index_extended = np.linalg.norm(xy[8] - xy[WRIST]) > np.linalg.norm(xy[6] - xy[WRIST])
         pinched = index_extended and np.linalg.norm(xy[4] - xy[8]) < PINCH_RATIO * palm_size
         if pinched:
@@ -489,7 +489,7 @@ class GestureEngine:
             elif not self.pinching and now - self.pinch_since >= PINCH_HOLD:
                 self.pinching, self.pinch_y = True, palm_y
                 events.append("pincer")
-            if self.pinching:  # main qui monte = volume +, qui descend = volume -
+            if self.pinching:  # hand going up = volume up, going down = volume down
                 steps = int((self.pinch_y - palm_y) / PINCH_STEP)
                 if steps:
                     events += ["volume+" if steps > 0 else "volume-"] * abs(steps)
@@ -499,7 +499,7 @@ class GestureEngine:
         else:
             self.pinch_since, self.pinching = None, False
 
-        # 2. Glissement : grand déplacement de la paume en peu de temps
+        # 2. Swipe: the palm travels a long way in a short time
         self.track.append((now, palm_x, palm_y))
         while now - self.track[0][0] > SWIPE_WINDOW:
             self.track.popleft()
@@ -509,16 +509,16 @@ class GestureEngine:
         if settled and now - self.last_swipe >= SWIPE_COOLDOWN:
             direction = None
             if abs(dx) > SWIPE_DISTANCE and abs(dx) > 2 * abs(dy):
-                direction = "droite" if dx > 0 else "gauche"  # l'image est en miroir : droite = ta droite
+                direction = "droite" if dx > 0 else "gauche"  # the image is mirrored: right = your right
             elif abs(dy) > SWIPE_DISTANCE and abs(dy) > 2 * abs(dx):
                 direction = "bas" if dy > 0 else "haut"
             if direction:
                 self.last_swipe = now
                 self.track.clear()
-                self.current, self.since = None, now  # pas de geste figé juste après
+                self.current, self.since = None, now  # no pose right after a swipe
                 return [f"glisser_{direction}"]
 
-        # 3. Geste figé : moyenne des prédictions sur les dernières images
+        # 3. Pose: average the predictions over the last few frames
         if self.model is None:
             return []
         probs = self.model.predict_proba(enrich([hand_vector(points, aspect)]))[0]
@@ -530,17 +530,17 @@ class GestureEngine:
         gesture = None
         if self.confidence >= CONFIDENCE and self.label != NEUTRAL and not moving:
             gesture = self.label
-        if gesture != self.current:  # nouveau geste (ou plus de geste) : on relance le chrono
+        if gesture != self.current:  # new gesture (or none anymore): restart the timer
             self.current, self.since = gesture, now
         elif gesture and now - self.since >= HOLD_SECONDS and now - self.last_fired >= COOLDOWN:
             self.last_fired = now
-            self.since = now + 3600  # pas de 2e déclenchement tant que le geste reste tenu
+            self.since = now + 3600  # don't fire again while the gesture is still held
             return [gesture]
         return []
 
 
 def live_test():
-    """Affiche en direct le geste reconnu, la certitude et les mouvements détectés."""
+    """Show the recognized gesture, its certainty and any detected moves, live."""
     model = load_model()
     if model is None:
         print("Aucun modèle à jour : seuls les mouvements seront reconnus (lance « entrainer »).")
@@ -563,7 +563,7 @@ def live_test():
                           color=(0, 200, 0) if ok else (0, 165, 255))
             if engine.pinching:
                 draw_text(frame, "PINCEMENT : monte / descends pour le volume", 1, (0, 200, 255))
-            if now - last_event_time < 1.5:  # le dernier événement reste affiché 1,5 s
+            if now - last_event_time < 1.5:  # the last event stays on screen for 1.5 s
                 description = GESTURE_ACTIONS.get(last_event, (None, ""))[1]
                 draw_text(frame, f">> {last_event}  {description}", 2, (0, 255, 0))
             cv2.imshow("Jarvis - test des gestes", frame)
@@ -576,23 +576,23 @@ def live_test():
 
 # --- Actions ---
 
-VK_MEDIA_NEXT, VK_MEDIA_PREV, VK_MEDIA_PLAY_PAUSE = 0xB0, 0xB1, 0xB3  # touches multimédia
+VK_MEDIA_NEXT, VK_MEDIA_PREV, VK_MEDIA_PLAY_PAUSE = 0xB0, 0xB1, 0xB3  # media keys
 
 
 def _actions():
-    """Associe un nom de geste ou de mouvement à (action, description).
-    L'action est une fonction, "ecouter" (géré par l'interface : Jarvis écoute le micro),
-    ou None (simple affichage). Pour changer : renomme la clé ou l'action."""
+    """Maps a gesture or move name to (action, description).
+    The action is a function, "ecouter" (handled by the window: Jarvis listens to the mic),
+    or None (just displayed). To change something, rename the key or swap the action."""
     from jarvis_tools import _press, VK_VOLUME_UP, VK_VOLUME_DOWN, couper_son, verrouiller_pc
     return {
-        # Gestes figés (à collecter sous ces noms)
+        # Poses (record them under these names)
         "main_ouverte": ("ecouter", "Jarvis t'écoute"),
         "poing": (couper_son, "Son coupé / rétabli"),
         "pouce_haut": (lambda: _press(VK_VOLUME_UP, 5), "Volume +10 %"),
         "pouce_bas": (lambda: _press(VK_VOLUME_DOWN, 5), "Volume -10 %"),
         "victoire": (lambda: _press(VK_MEDIA_PLAY_PAUSE), "Lecture / pause musique"),
         "rock": (verrouiller_pc, "PC verrouillé"),
-        # Mouvements (reconnus sans entraînement)
+        # Moves (recognized without training)
         "glisser_droite": (lambda: _press(VK_MEDIA_NEXT), "Morceau suivant"),
         "glisser_gauche": (lambda: _press(VK_MEDIA_PREV), "Morceau précédent"),
         "glisser_haut": (lambda: _press(VK_VOLUME_UP, 5), "Volume +10 %"),
@@ -607,17 +607,17 @@ GESTURE_ACTIONS = _actions()
 
 
 class GestureWatcher:
-    """Surveille la webcam en arrière-plan et appelle on_gesture(nom) pour chaque
-    geste ou mouvement reconnu.
+    """Watches the webcam in the background and calls on_gesture(name) for every
+    gesture or move it recognizes.
 
-    Usage : mettre enabled = True puis appeler start(). Remettre enabled = False
-    arrête la surveillance et éteint la webcam (le thread se termine)."""
+    Usage: set enabled = True, then call start(). Setting enabled back to False stops
+    watching and turns the webcam off (the thread ends)."""
 
     def __init__(self, on_gesture, on_error):
         self.on_gesture = on_gesture
         self.on_error = on_error
         self.enabled = False
-        self.running = False  # True tant que le thread de surveillance tourne
+        self.running = False  # True while the watching thread is alive
 
     def start(self):
         if not self.running:
@@ -627,8 +627,8 @@ class GestureWatcher:
     def _run(self):
         tracker = None
         try:
-            # Relu à chaque activation : un nouvel entraînement est pris en compte.
-            # Sans modèle, seuls les mouvements (glisser, pincer) sont reconnus.
+            # Reloaded every time it's switched on, so a fresh training is picked up.
+            # Without a model, only the moves (swipe, pinch) are recognized.
             engine = GestureEngine(load_model())
             tracker = HandTracker()
             while self.enabled:
@@ -641,14 +641,14 @@ class GestureWatcher:
             self.on_error(f"Gestes indisponibles : {e}")
         finally:
             if tracker:
-                tracker.close()  # éteint la webcam
+                tracker.close()  # turns the webcam off
             self.running = False
-            if self.enabled:  # réactivé pendant que ce thread se terminait : on relance
+            if self.enabled:  # switched back on while this thread was ending: start again
                 self.start()
 
 
 def model_ready():
-    """True si un modèle de gestes figés à jour existe."""
+    """True if an up-to-date pose model exists."""
     return load_model() is not None
 
 

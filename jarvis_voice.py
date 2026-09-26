@@ -1,15 +1,15 @@
-"""Voix de Jarvis.
+"""Jarvis's voice.
 
-Voix principale : voix neuronale Microsoft via edge-tts (naturelle, gratuite, Internet requis).
-Voix de secours : Hortense (pyttsx3, hors ligne), utilisée automatiquement si edge-tts échoue.
+Main voice: Microsoft's neural voices through edge-tts (natural, free, needs Internet).
+Backup voice: Hortense (pyttsx3, offline), used automatically whenever edge-tts fails.
 
-Pour que Jarvis commence à parler sans attendre la fin de sa réponse, le texte est découpé
-en phrases (SentenceStreamer) et passe par deux étages qui travaillent en parallèle :
+So that Jarvis can start talking before his answer is finished, the text is cut into
+sentences (SentenceStreamer) that go through two stages working side by side:
 
-    phrases --> [synthèse : texte -> fichier mp3] --> [lecture du mp3] --> haut-parleurs
+    sentences --> [synthesis: text -> mp3 file] --> [mp3 playback] --> speakers
 
-Pendant que la phrase 1 est lue, la phrase 2 est déjà en cours de synthèse.
-Voix disponibles : python -m edge_tts --list-voices (françaises : fr-FR-...)
+While sentence 1 is playing, sentence 2 is already being synthesized.
+To list the available voices: python -m edge_tts --list-voices (French ones start with fr-FR-)
 """
 import asyncio
 import ctypes
@@ -21,16 +21,16 @@ import threading
 import time
 import edge_tts
 
-TTS_VOICE = "fr-FR-HenriNeural"   # autre voix masculine : "fr-FR-RemyMultilingualNeural"
-TTS_RATE = "+5%"                  # vitesse : "-10%" plus lent, "+20%" plus rapide
+TTS_VOICE = "fr-FR-HenriNeural"   # another male voice: "fr-FR-RemyMultilingualNeural"
+TTS_RATE = "+5%"                  # speed: "-10%" is slower, "+20%" faster
 FALLBACK_VOICE_ID = "HKEY_LOCAL_MACHINE\\SOFTWARE\\Microsoft\\Speech\\Voices\\Tokens\\TTS_MS_FR-FR_HORTENSE_11.0"
-MIN_SENTENCE = 15                 # une « phrase » plus courte est regroupée avec la suivante
+MIN_SENTENCE = 15                 # anything shorter gets merged with the next sentence
 
-_mci = ctypes.windll.winmm.mciSendStringW  # lecteur audio intégré à Windows (aucune installation)
+_mci = ctypes.windll.winmm.mciSendStringW  # the audio player built into Windows (nothing to install)
 
 
 def clean_for_speech(text):
-    """Retire ce qui ne se prononce pas : symboles de mise en forme, adresses web."""
+    """Strip what can't be read aloud: formatting symbols, web addresses."""
     text = re.sub(r"https?://\S+", "", text)
     text = re.sub(r"[*#`_>|\[\]←↑→↓↖↗↘↙]", "", text)
     text = text.replace("°C", " degrés").replace("km/h", " kilomètres heure")
@@ -38,22 +38,22 @@ def clean_for_speech(text):
 
 
 class Speaker:
-    """File d'attente de phrases à prononcer, jouées dans l'ordre."""
+    """A queue of sentences to say, played in order."""
 
     def __init__(self):
-        self.texts = queue.Queue()   # (génération, texte) en attente de synthèse
-        self.audio = queue.Queue()   # (génération, fichier mp3 ou None, texte) prêts à jouer
-        self.pending = 0             # phrases pas encore entièrement prononcées
+        self.texts = queue.Queue()   # (generation, text) waiting to be synthesized
+        self.audio = queue.Queue()   # (generation, mp3 file or None, text) ready to play
+        self.pending = 0             # sentences not fully spoken yet
         self.done = threading.Condition()
-        self.generation = 0          # augmente à chaque stop() : les anciennes phrases sont jetées
+        self.generation = 0          # bumped on every stop(): older sentences get dropped
         self.muted = False
         threading.Thread(target=self._synthesize_loop, daemon=True).start()
         threading.Thread(target=self._play_loop, daemon=True).start()
 
-    # --- Utilisation ---
+    # --- Using it ---
 
     def say(self, text, wait=False):
-        """Ajoute une phrase à dire. wait=True bloque jusqu'à ce que TOUT soit prononcé."""
+        """Queue a sentence. wait=True blocks until everything has been said."""
         text = clean_for_speech(text)
         if self.muted or not text:
             return
@@ -68,20 +68,20 @@ class Speaker:
             self.done.wait_for(lambda: self.pending == 0)
 
     def is_speaking(self):
-        """True tant qu'une phrase est en attente, en synthèse ou en cours de lecture."""
+        """True while a sentence is queued, being synthesized or playing."""
         return self.pending > 0
 
     def stop(self):
-        """Coupe la parole immédiatement et oublie les phrases en attente."""
+        """Stop talking right now and forget the queued sentences."""
         self.generation += 1
 
-    # --- Étage 1 : texte -> mp3 ---
+    # --- Stage 1: text -> mp3 ---
 
     def _synthesize_loop(self):
-        loop = asyncio.new_event_loop()  # edge-tts est asynchrone : il lui faut une boucle à lui
+        loop = asyncio.new_event_loop()  # edge-tts is async, so it needs its own event loop
         while True:
             generation, text = self.texts.get()
-            if generation != self.generation:  # arrêté entre-temps
+            if generation != self.generation:  # stopped in the meantime
                 self._finished()
                 continue
             fd, path = tempfile.mkstemp(suffix=".mp3", prefix="jarvis_")
@@ -89,14 +89,14 @@ class Speaker:
             try:
                 loop.run_until_complete(edge_tts.Communicate(text, TTS_VOICE, rate=TTS_RATE).save(path))
                 self.audio.put((generation, path, text))
-            except Exception:  # pas d'Internet, service indisponible... -> voix de secours
+            except Exception:  # no Internet, service down... -> backup voice
                 os.remove(path)
                 self.audio.put((generation, None, text))
 
-    # --- Étage 2 : lecture ---
+    # --- Stage 2: playback ---
 
     def _play_loop(self):
-        fallback = None  # moteur hors ligne, créé seulement si nécessaire
+        fallback = None  # offline engine, only created if we ever need it
         while True:
             generation, path, text = self.audio.get()
             try:
@@ -108,7 +108,7 @@ class Speaker:
                         fallback.say(text)
                         fallback.runAndWait()
             except Exception:
-                pass  # un problème de lecture ne doit jamais bloquer les phrases suivantes
+                pass  # a playback problem must never hold up the next sentences
             finally:
                 if path:
                     try:
@@ -118,7 +118,7 @@ class Speaker:
                 self._finished()
 
     def _play_mp3(self, path, generation):
-        """Lit le fichier ; s'interrompt si stop() est appelé pendant la lecture."""
+        """Play the file, and cut it short if stop() is called meanwhile."""
         _mci(f'open "{path}" type mpegvideo alias jarvis_voice', None, 0, 0)
         try:
             _mci("play jarvis_voice", None, 0, 0)
@@ -134,7 +134,7 @@ class Speaker:
     @staticmethod
     def _fallback_engine():
         try:
-            import pythoncom  # la voix Windows (SAPI5) exige COM initialisé dans ce thread
+            import pythoncom  # the Windows voice (SAPI5) needs COM initialized in this thread
             pythoncom.CoInitialize()
         except ImportError:
             pass
@@ -154,8 +154,8 @@ class Speaker:
 
 
 class SentenceStreamer:
-    """Reçoit la réponse morceau par morceau (streaming) et envoie chaque phrase
-    à la voix dès qu'elle est complète. Appeler flush() à la fin de la réponse."""
+    """Takes the answer piece by piece (streaming) and hands each sentence to the voice
+    as soon as it's complete. Call flush() once the answer is over."""
 
     SENTENCE_END = re.compile(r"[.!?…]+\s+|\n+")
 
@@ -168,7 +168,7 @@ class SentenceStreamer:
         start = 0
         for match in self.SENTENCE_END.finditer(self.buffer):
             sentence = self.buffer[start:match.end()]
-            if len(sentence.strip()) >= MIN_SENTENCE:  # trop court : on attend la suite
+            if len(sentence.strip()) >= MIN_SENTENCE:  # too short: wait for more
                 self.speaker.say(sentence)
                 start = match.end()
         self.buffer = self.buffer[start:]

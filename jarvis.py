@@ -1,7 +1,7 @@
-"""Jarvis en mode terminal. Lancer : python jarvis.py
+"""Jarvis in terminal mode. Run: python jarvis.py
 
-Entrée vide = parler au micro ; sinon taper son message. « exit » pour quitter.
-Toute l'intelligence est dans jarvis_core.py ; ce fichier ne gère que le dialogue.
+Press Enter on an empty line to talk into the mic, or just type your message. "exit" quits.
+All the smarts are in jarvis_core.py; this file only handles the back-and-forth.
 """
 from rich.console import Console
 from rich.panel import Panel
@@ -11,18 +11,18 @@ from jarvis_voice import Speaker
 from jarvis_tools import TOOLS
 from jarvis_reminders import reminders
 
-console = Console()   # affichage coloré dans le terminal
+console = Console()   # colored output in the terminal
 speaker = Speaker()
 
 
 def speak(text):
-    """Affiche la réponse dans un cadre puis la prononce."""
+    """Show the answer in a box, then say it out loud."""
     console.print(Panel(text, title="[cyan]Jarvis[/cyan]", border_style="cyan"))
-    speaker.say(text, wait=True)  # attendre la fin pour ne pas s'enregistrer soi-même
+    speaker.say(text, wait=True)  # wait until he's done, so the mic doesn't record him
 
 
 def listen():
-    """Écoute le micro et retourne le texte compris, ou None."""
+    """Listen to the mic and return what was understood, or None."""
     console.print("[cyan]Jarvis écoute...[/cyan]")
     text, error = listen_voice()
     if text:
@@ -33,7 +33,7 @@ def listen():
 
 
 def respond(history, user_input):
-    """Interroge Jarvis avec une animation d'attente ; les erreurs deviennent des réponses."""
+    """Ask Jarvis while showing a spinner. Errors are turned into answers."""
     try:
         with console.status("[cyan]Jarvis réfléchit...[/cyan]") as status:
             return ask_model(history, user_input, TOOLS, on_status=lambda text: status.update(f"[cyan]{text}[/cyan]"))
@@ -45,11 +45,11 @@ def respond(history, user_input):
 
 def main():
     history = load_history()
-    # Prépare le modèle pendant l'accueil (et lance Ollama s'il ne tourne pas)
+    # Warm up the model during the greeting (and start Ollama if it isn't running)
     warm_up(history, TOOLS, on_error=lambda msg: console.print(f"[red]{msg}[/red]"))
     console.print(Panel("JARVIS — Système vocal en ligne", style="bold cyan"))
     speak("Jarvis en ligne. Je vous écoute.")
-    # Rappels : annoncés dans le terminal et à voix haute, même pendant la saisie
+    # Reminders get announced in the terminal and out loud, even while you're typing
     reminders.on_due = lambda message, late: speak(
         f"Rappel manqué (il y a {late} min) : {message}" if late else f"Rappel : {message}")
     reminders.start()
@@ -63,7 +63,7 @@ def main():
                 speak("Système en veille. À bientôt.")
                 break
 
-            user_input = mode or listen()  # rien tapé -> on écoute le micro
+            user_input = mode or listen()  # nothing typed -> listen to the mic
             if user_input:
                 speak(respond(history, user_input))
 

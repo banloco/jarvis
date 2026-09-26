@@ -1,15 +1,15 @@
-"""Mémoire à long terme de Jarvis.
+"""Jarvis's long-term memory.
 
-Principe :
-- Chaque échange (question + réponse) et chaque fait est archivé, sans limite.
-- Pour chaque texte, un petit modèle (EMBED_MODEL) calcule une « empreinte de sens » :
-  un vecteur de nombres. Deux textes qui parlent de la même chose ont des vecteurs proches,
-  même s'ils n'utilisent pas les mêmes mots (« mon chien » ≈ « Rex, mon berger allemand »).
-- À chaque question, on calcule son vecteur et on ressort les souvenirs les plus proches.
+The idea:
+- Every exchange (question + answer) and every fact gets archived, with no limit.
+- For each text, a small model (EMBED_MODEL) computes a "meaning fingerprint": a vector of
+  numbers. Two texts about the same thing end up with close vectors, even when they don't
+  share any words ("my dog" ≈ "Rex, my German shepherd").
+- For each new question we compute its vector and bring back the closest memories.
 
-Fichiers créés à côté du code :
-- long_term.json                    : les souvenirs en texte (lisible, modifiable à la main)
-- long_term.<modèle>.npy            : les vecteurs correspondants (binaire, recalculable)
+Files created next to the code:
+- long_term.json          : the memories as text (readable, you can edit it by hand)
+- long_term.<model>.npy   : the matching vectors (binary, can always be recomputed)
 """
 import json
 import threading
@@ -18,22 +18,22 @@ import ollama
 from datetime import datetime
 from jarvis_config import USER_LABEL
 
-# Modèle multilingue : il sépare bien les phrases françaises liées / sans rapport
-# (nomic-embed-text, testé, donnait des scores presque identiques partout en français).
+# A multilingual model: it tells related and unrelated French sentences apart nicely.
+# (We tried nomic-embed-text first; in French it gave almost the same score to everything.)
 EMBED_MODEL = "paraphrase-multilingual"
-MIN_SCORE = 0.4    # similarité minimale (-1 à 1) pour qu'un souvenir soit jugé pertinent
-BATCH = 32         # textes envoyés à Ollama par appel
-client = ollama.Client(timeout=60)  # délai maximum : un Ollama bloqué ne doit pas figer Jarvis
+MIN_SCORE = 0.4    # minimum similarity (-1 to 1) for a memory to count as relevant
+BATCH = 32         # texts sent to Ollama per call
+client = ollama.Client(timeout=60)  # with a timeout, so a stuck Ollama can't freeze Jarvis
 
 
 class LongTermMemory:
     def __init__(self, base_dir, keep_alive="30m"):
-        # Les textes (lisibles) et les vecteurs (binaires) sont stockés séparément.
-        # Le fichier de vecteurs porte le nom du modèle : en changer force un recalcul.
+        # Texts (readable) and vectors (binary) are stored separately.
+        # The vector file is named after the model, so switching models forces a recompute.
         self.items_file = base_dir / "long_term.json"
         self.vectors_file = base_dir / f"long_term.{EMBED_MODEL}.npy"
         self.keep_alive = keep_alive
-        self.lock = threading.Lock()  # add() peut être appelé depuis plusieurs threads
+        self.lock = threading.Lock()  # add() can be called from several threads
         try:
             self.items = json.loads(self.items_file.read_text(encoding="utf-8"))
         except (FileNotFoundError, json.JSONDecodeError):
@@ -42,14 +42,14 @@ class LongTermMemory:
             self.vectors = np.load(self.vectors_file)
         except (FileNotFoundError, ValueError):
             self.vectors = None
-        # Vecteurs absents ou désynchronisés (crash, changement de modèle) : on recalcule
+        # Vectors missing or out of sync (a crash, a new model): recompute them
         if self.items and (self.vectors is None or len(self.vectors) != len(self.items)):
             self.vectors = self._embed([i["text"] for i in self.items])
             self._save()
 
     def _embed(self, texts):
-        """Transforme des textes en vecteurs normalisés (une ligne par texte).
-        Normalisés = de longueur 1, donc un simple produit scalaire donne la similarité."""
+        """Turn texts into normalized vectors (one row per text).
+        Normalized means length 1, so a plain dot product gives the similarity."""
         chunks = []
         for start in range(0, len(texts), BATCH):
             batch = texts[start:start + BATCH]
@@ -59,7 +59,7 @@ class LongTermMemory:
         return vectors / np.linalg.norm(vectors, axis=1, keepdims=True)
 
     def _save(self):
-        # Écriture via un fichier temporaire : un crash ne corrompt jamais l'archive
+        # Written through a temp file, so a crash never corrupts the archive
         tmp = self.items_file.with_suffix(".tmp")
         tmp.write_text(json.dumps(self.items, ensure_ascii=False, indent=1), encoding="utf-8")
         tmp.replace(self.items_file)
@@ -67,34 +67,34 @@ class LongTermMemory:
             np.save(f, self.vectors)
 
     def add_many(self, entries):
-        """Archive plusieurs souvenirs d'un coup.
-        entries : liste de dicts {"text", "kind" ("fait" ou "conversation"), "date", ...}."""
+        """Archive several memories at once.
+        entries: list of dicts {"text", "kind" ("fait" or "conversation"), "date", ...}."""
         if not entries:
             return
-        vectors = self._embed([e["text"] for e in entries])  # hors verrou : c'est l'étape lente
+        vectors = self._embed([e["text"] for e in entries])  # outside the lock: this is the slow part
         with self.lock:
             self.items.extend(entries)
             self.vectors = vectors if self.vectors is None else np.vstack([self.vectors, vectors])
             self._save()
 
     def add(self, text, kind, **extra):
-        """Archive un souvenir daté de maintenant. extra : champs libres en plus."""
+        """Archive one memory dated now. extra: any additional fields."""
         self.add_many([{"text": text, "kind": kind, "date": datetime.now().isoformat(timespec="minutes"), **extra}])
 
     def add_exchange(self, user_input, reply):
-        """Archive un échange. Le champ "user" sert à ne pas ressortir un échange
-        qui est déjà dans la conversation en cours."""
+        """Archive an exchange. The "user" field lets us avoid bringing back an exchange
+        that's already in the current conversation."""
         self.add(f"{USER_LABEL} : {user_input}\nJarvis : {reply}", "conversation", user=user_input)
 
     def search(self, query, k=5, skip=lambda item: False):
-        """Retourne jusqu'à k souvenirs proches de la question, du plus au moins pertinent.
-        skip(item) -> True pour ignorer un souvenir (ex : déjà affiché ailleurs)."""
+        """Return up to k memories close to the question, most relevant first.
+        skip(item) -> True to leave a memory out (e.g. it's already shown elsewhere)."""
         if self.vectors is None:
             return []
-        # Similarité entre la question et chaque souvenir, en une seule opération
+        # Similarity between the question and every memory, in a single operation
         scores = self.vectors @ self._embed([query])[0]
         results = []
-        for idx in np.argsort(scores)[::-1]:  # du meilleur score au moins bon
+        for idx in np.argsort(scores)[::-1]:  # best score first
             if scores[idx] < MIN_SCORE or len(results) >= k:
                 break
             if not skip(self.items[idx]):
@@ -102,12 +102,12 @@ class LongTermMemory:
         return results
 
     def import_existing(self, facts, history):
-        """Au tout premier lancement : archive les faits (facts.json) et les
-        conversations (memory.json) enregistrés avant l'existence de cette mémoire."""
+        """On the very first run: archive the facts (facts.json) and conversations
+        (memory.json) that were saved before this memory existed."""
         if self.items:
             return
         entries = [{"text": f["content"], "kind": "fait", "date": f.get("date", "")[:16]} for f in facts]
-        # On reforme les paires question / réponse de l'historique
+        # Rebuild the question / answer pairs from the history
         for user, assistant in zip(history, history[1:]):
             if user["role"] == "user" and assistant["role"] == "assistant":
                 entries.append({"text": f"{USER_LABEL} : {user['content']}\nJarvis : {assistant['content']}",

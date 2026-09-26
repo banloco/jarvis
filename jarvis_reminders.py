@@ -1,13 +1,12 @@
-"""Minuteurs et rappels.
+"""Timers and reminders.
 
-Les rappels sont enregistrés dans reminders.json : ils survivent à la fermeture de Jarvis.
-Un fil d'exécution vérifie chaque seconde si un rappel est arrivé à échéance et appelle
-alors on_due(message, retard_en_minutes). L'interface branche on_due sur la voix et l'écran.
-Un rappel arrivé à échéance pendant que Jarvis était fermé est annoncé au démarrage,
-avec son retard.
+Reminders are saved in reminders.json, so they survive Jarvis being closed.
+A background thread checks every second whether one is due, and if so calls
+on_due(message, minutes_late). The window hooks on_due up to the voice and the screen.
+If a reminder came due while Jarvis was closed, it's announced at startup, with how late it is.
 
-Utilisation : les outils creer_rappel / lister_rappels / annuler_rappel (jarvis_tools.py)
-passent par l'instance partagée `reminders`.
+The tools creer_rappel / lister_rappels / annuler_rappel (jarvis_tools.py) all go through
+the shared `reminders` instance.
 """
 import threading
 import time
@@ -16,19 +15,19 @@ from pathlib import Path
 from jarvis_core import load_json, save_json
 
 REMINDERS_FILE = Path(__file__).resolve().parent / "reminders.json"
-LATE_AFTER = 60  # secondes : au-delà, le rappel est annoncé comme « manqué »
+LATE_AFTER = 60  # seconds; past that, the reminder is announced as "missed"
 
 
 class Reminders:
     def __init__(self, path=REMINDERS_FILE):
         self.path = path
-        self.lock = threading.Lock()  # les outils (thread de réponse) et la vérification se croisent
-        self.items = load_json(path, [])  # [{"message", "due" (date ISO), "created"}]
+        self.lock = threading.Lock()  # the tools (answer thread) and the checker run side by side
+        self.items = load_json(path, [])  # [{"message", "due" (ISO date), "created"}]
         self.on_due = lambda message, late_minutes: print(f"⏰ Rappel : {message}")
         self.started = False
 
     def start(self):
-        """Lance la vérification en arrière-plan (une seule fois)."""
+        """Start checking in the background (only once)."""
         if not self.started:
             self.started = True
             threading.Thread(target=self._loop, daemon=True).start()
@@ -42,13 +41,13 @@ class Reminders:
         return item
 
     def pending(self):
-        """Rappels à venir, du plus proche au plus lointain."""
+        """Upcoming reminders, soonest first."""
         with self.lock:
             return sorted(self.items, key=lambda i: i["due"])
 
     def cancel(self, search):
-        """Annule les rappels dont le message contient `search` (« tous » = tout annuler).
-        Retourne la liste des rappels annulés."""
+        """Cancel the reminders whose message contains `search` ("tous" cancels them all).
+        Returns the list of cancelled reminders."""
         search = search.lower().strip()
         with self.lock:
             removed = [i for i in self.items if search in ("tous", "tout") or search in i["message"].lower()]
@@ -67,10 +66,10 @@ class Reminders:
                 if due:
                     self.items = [i for i in self.items if i not in due]
                     self._save()
-            for item in due:  # appelé hors du verrou : on_due peut prendre du temps
+            for item in due:  # called outside the lock, since on_due can take a while
                 late = (now - datetime.fromisoformat(item["due"])).total_seconds()
                 self.on_due(item["message"], round(late / 60) if late > LATE_AFTER else 0)
             time.sleep(1)
 
 
-reminders = Reminders()  # instance partagée par les outils et l'interface
+reminders = Reminders()  # shared by the tools and the window

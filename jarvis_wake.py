@@ -1,21 +1,21 @@
-"""Réveil vocal : dites « Hey Jarvis », puis votre demande.
+"""Wake word: say "Hey Jarvis", then what you want.
 
-Fonctionnement :
-1. Le micro reste ouvert en permanence ; chaque bloc de 80 ms est analysé par
-   openWakeWord (un petit réseau de neurones local, rien n'est envoyé sur Internet).
-2. Quand il reconnaît « Hey Jarvis » avec assez de confiance, on émet un bip
-   et on enregistre la suite jusqu'au silence (jarvis_core.record_until_silence).
-3. Seule cette demande est envoyée à Google pour être transcrite en texte.
+How it works:
+1. The mic stays open all the time. Every 80 ms block goes through openWakeWord
+   (a small neural network running locally; nothing is sent over the Internet).
+2. When it's confident enough that it heard "Hey Jarvis", it beeps and records
+   what comes next until you stop talking (jarvis_core.record_until_silence).
+3. Only that request is sent to Google to be turned into text.
 
-L'écoute est mise en pause pendant que Jarvis réfléchit ou parle (is_paused),
-sinon il pourrait se déclencher en s'entendant lui-même.
+Listening pauses while Jarvis is thinking or talking (is_paused); otherwise he could
+wake himself up by hearing his own voice.
 
-Mode conversation : après une réponse, l'interface appelle listen_again(). Dès que Jarvis
-a fini de parler, un bip grave signale qu'il écoute encore FOLLOWUP_SECONDS secondes,
-sans « Hey Jarvis ». Si personne ne parle, il se rendort (on_idle).
+Conversation mode: after an answer, the window calls listen_again(). Once Jarvis has
+finished talking, a lower beep means he's still listening for FOLLOWUP_SECONDS seconds,
+no "Hey Jarvis" needed. If nobody says anything, he goes back to sleep (on_idle).
 
-Calibrage sur ta voix : python jarvis_wake.py calibrer
-(mesure tes scores et enregistre le seuil adapté dans wake_config.json)
+Tune it to your voice: python jarvis_wake.py calibrer
+(measures your scores and saves a threshold that suits you in wake_config.json)
 """
 import queue
 import sys
@@ -26,20 +26,20 @@ from pathlib import Path
 import numpy as np
 from jarvis_core import load_json, mic_stream, read_frames, record_until_silence, save_json, transcribe, volume
 
-WAKE_MODEL = "hey_jarvis"  # modèle pré-entraîné fourni par openWakeWord
-WAKE_THRESHOLD = 0.5       # confiance minimale (0 à 1) par défaut, remplacée par le calibrage
-CONFIG_FILE = Path(__file__).resolve().parent / "wake_config.json"  # seuil issu du calibrage
-FOLLOWUP_SECONDS = 5       # mode conversation : durée d'écoute après une réponse (0 = désactivé)
+WAKE_MODEL = "hey_jarvis"  # pre-trained model that ships with openWakeWord
+WAKE_THRESHOLD = 0.5       # default minimum confidence (0 to 1); calibration overrides it
+CONFIG_FILE = Path(__file__).resolve().parent / "wake_config.json"  # threshold from calibration
+FOLLOWUP_SECONDS = 5       # conversation mode: how long to keep listening after an answer (0 = off)
 
 
 def load_threshold():
-    """Seuil enregistré par le calibrage, sinon WAKE_THRESHOLD."""
+    """The threshold saved by calibration, or WAKE_THRESHOLD."""
     return float(load_json(CONFIG_FILE, {}).get("threshold", WAKE_THRESHOLD))
 
 
 def load_wake_model():
-    """Charge le modèle « Hey Jarvis » (téléchargé la 1re fois)."""
-    from openwakeword.model import Model  # import ici : Jarvis marche aussi sans openwakeword
+    """Load the "Hey Jarvis" model (downloaded the first time)."""
+    from openwakeword.model import Model  # imported here so Jarvis still runs without openwakeword
     from openwakeword.utils import download_models
     download_models([WAKE_MODEL])
     return Model(wakeword_models=[WAKE_MODEL], inference_framework="onnx")
@@ -48,25 +48,25 @@ def load_wake_model():
 class WakeWordListener:
     def __init__(self, on_wake, on_command, on_error, is_paused=lambda: False, on_idle=lambda: None):
         """
-        on_wake(suite)          : l'écoute commence (suite=True en mode conversation)
-        on_command(texte, err)  : demande transcrite (texte), ou message d'erreur (err)
-        on_error(message)       : le réveil vocal ne peut pas fonctionner
-        is_paused() -> bool     : True quand il ne faut pas écouter (Jarvis occupé / parle)
-        on_idle()               : mode conversation terminé sans que personne ne parle
+        on_wake(followup)       : listening starts (followup=True in conversation mode)
+        on_command(text, err)   : the transcribed request (text), or an error message (err)
+        on_error(message)       : the wake word can't work
+        is_paused() -> bool     : True when we shouldn't listen (Jarvis busy or talking)
+        on_idle()               : conversation mode ended without anyone saying anything
         """
         self.on_wake = on_wake
         self.on_command = on_command
         self.on_error = on_error
         self.is_paused = is_paused
         self.on_idle = on_idle
-        self.enabled = True     # interrupteur on/off (bouton ÉCOUTE de l'interface)
-        self.followup = False   # True = écouter une suite dès que Jarvis a fini de parler
+        self.enabled = True     # on/off switch (the ÉCOUTE button in the window)
+        self.followup = False   # True = listen for a follow-up as soon as Jarvis stops talking
 
     def start(self):
         threading.Thread(target=self._run, daemon=True).start()
 
     def listen_again(self):
-        """Mode conversation : écouter une suite, sans « Hey Jarvis », après la réponse."""
+        """Conversation mode: listen for a follow-up after the answer, no "Hey Jarvis" needed."""
         if self.enabled and FOLLOWUP_SECONDS > 0:
             self.followup = True
 
@@ -80,33 +80,33 @@ class WakeWordListener:
         threshold = load_threshold()
 
         frames = queue.Queue()
-        levels = deque(maxlen=40)  # volume des ~3 dernières secondes, pour estimer le bruit ambiant
+        levels = deque(maxlen=40)  # loudness over the last ~3 seconds, to estimate background noise
         paused = False
         try:
             with mic_stream(frames):
                 while True:
                     frame = frames.get()
                     if not self.enabled or self.is_paused():
-                        # Oublie ce qui a été entendu avant la pause, UNE seule fois :
-                        # reset() est coûteux, et l'appeler à chaque bloc (12 fois par seconde)
-                        # occupait un cœur entier pendant que Jarvis réfléchissait ou parlait.
+                        # Forget what was heard before the pause, but only once.
+                        # reset() is expensive: calling it on every block (12 times a second)
+                        # kept a whole CPU core busy while Jarvis was thinking or talking.
                         if not paused:
                             model.reset()
                             paused = True
                         continue
                     paused = False
                     levels.append(volume(frame))
-                    noise = float(np.percentile(levels, 20))  # bruit ambiant estimé
+                    noise = float(np.percentile(levels, 20))  # estimated background noise
 
-                    # Mode conversation : Jarvis vient de finir de parler, on écoute la suite
+                    # Conversation mode: Jarvis just finished talking, listen for what comes next
                     if self.followup:
                         self.followup = False
                         self.on_wake(True)
-                        winsound.Beep(660, 90)  # bip plus grave et court : « je t'écoute encore »
+                        winsound.Beep(660, 90)  # lower, shorter beep: "still listening"
                         audio = record_until_silence(read_frames(frames), noise_floor=noise,
                                                      no_speech=FOLLOWUP_SECONDS)
                         if audio is None:
-                            self.on_idle()  # personne n'a parlé : Jarvis se rendort, sans message
+                            self.on_idle()  # nobody spoke: Jarvis goes back to sleep quietly
                         else:
                             self.on_command(*transcribe(audio))
                         continue
@@ -114,23 +114,23 @@ class WakeWordListener:
                     if model.predict(frame)[WAKE_MODEL] < threshold:
                         continue
 
-                    # « Hey Jarvis » détecté
+                    # "Hey Jarvis" heard
                     model.reset()
                     self.on_wake(False)
-                    winsound.Beep(880, 120)  # bip : « je t'écoute »
+                    winsound.Beep(880, 120)  # beep: "I'm listening"
                     audio = record_until_silence(read_frames(frames), noise_floor=noise)
                     self.on_command(*transcribe(audio))
         except Exception as e:
             self.on_error(f"Micro indisponible : {e}")
 
 
-# --- Calibrage sur la voix de l'utilisateur ---
+# --- Calibrating on the user's voice ---
 
-FRAMES_PER_SECOND = 12.5  # blocs de 80 ms
+FRAMES_PER_SECOND = 12.5  # 80 ms blocks
 
 
 def record_scores(model, frames, seconds):
-    """Écoute `seconds` secondes : score de chaque bloc + volume, avec une barre en direct."""
+    """Listen for `seconds` seconds: score and loudness of every block, with a live bar."""
     model.reset()
     scores, levels = [], []
     for _ in range(int(seconds * FRAMES_PER_SECOND)):
@@ -145,8 +145,8 @@ def record_scores(model, frames, seconds):
 
 
 def peaks(scores, min_score=0.02, gap=8):
-    """Meilleur score de chaque « Hey Jarvis » : groupes de blocs au-dessus de min_score,
-    séparés par au moins `gap` blocs (~0,6 s) plus bas."""
+    """Best score of each "Hey Jarvis": runs of blocks above min_score, separated by
+    at least `gap` quieter blocks (~0.6 s)."""
     groups, current, quiet = [], [], 0
     for s in scores:
         if s > min_score:
@@ -162,17 +162,17 @@ def peaks(scores, min_score=0.02, gap=8):
     return groups
 
 
-SAFETY_MARGIN = 0.1  # le seuil reste toujours au moins 0,1 au-dessus de ta voix ordinaire
+SAFETY_MARGIN = 0.1  # the threshold always stays at least 0.1 above your normal speech
 
 
 def recommend(false_max, all_peaks, attempts=5):
-    """Seuil proposé : sous tes « Hey Jarvis », nettement au-dessus de ta voix ordinaire.
-    Retourne (seuil ou None, explication).
+    """Suggested threshold: below your "Hey Jarvis", well above your normal speech.
+    Returns (threshold or None, explanation).
 
-    - On ne garde que tes `attempts` meilleurs pics, et seulement ceux qui dépassent
-      nettement ta voix ordinaire (les petits pics de bruit ne sont pas des tentatives).
-    - On vise 70 % de la MÉDIANE (un essai raté ne fait pas tout baisser),
-      sans jamais descendre sous « voix ordinaire + marge de sécurité »."""
+    - We only keep your `attempts` best peaks, and only the ones clearly above your normal
+      speech (small noise spikes aren't real attempts; an early version suggested 0.05!).
+    - We aim for 70% of the median, so one bad attempt doesn't drag everything down,
+      and we never go below "normal speech + safety margin"."""
     floor = false_max + SAFETY_MARGIN
     real = sorted((p for p in all_peaks if p > max(0.1, floor)), reverse=True)[:attempts]
     if not real:
@@ -192,7 +192,7 @@ def calibrate(ask=input):
     model = load_wake_model()
     frames = queue.Queue()
     with mic_stream(frames):
-        frames.get()  # le micro est prêt
+        frames.get()  # the mic is ready
         ask("\n1/2 — Appuie sur Entrée puis PARLE NORMALEMENT 10 secondes, sans dire « Jarvis »...")
         normal, levels = record_scores(model, frames, 10)
         ask("\n2/2 — Appuie sur Entrée puis dis « Hey Jarvis » 5 fois, avec 2 secondes entre chaque...")

@@ -1,29 +1,28 @@
-"""Interface holographique façon Iron Man, pilotée avec la main devant la webcam.
+"""An Iron Man style holographic display that you drive with your hand in front of the webcam.
 
-Ce que tu vois : ton image webcam assombrie et, par-dessus, des panneaux lumineux
-(météo, état du PC, rappels, musique, volume, applis, dernière réponse de Jarvis)
-autour d'un réacteur arc.
+What you see: your webcam image, dimmed, with glowing panels on top of it (weather,
+PC status, reminders, music, volume, apps, Jarvis's last answer) around an arc reactor.
 
-Comment la piloter :
-- le curseur lumineux suit le point entre ton POUCE et ton INDEX ;
-- PINCER (pouce contre index) = cliquer sur un bouton ;
-- pincer un panneau (en dehors d'un bouton) puis bouger la main = le déplacer ;
-- pincer la barre de volume puis glisser = régler le volume ;
-- pincer le réacteur au centre = parler à Jarvis (si le HUD est ouvert depuis sa fenêtre) ;
-- Échap, Q ou le bouton FERMER = quitter. La souris marche aussi (clic gauche = pincer).
+How to use it:
+- the glowing cursor follows the point between your THUMB and your INDEX finger;
+- PINCH (thumb against index) = click a button;
+- pinch a panel (anywhere but a button) and move your hand = drag it around;
+- pinch the volume bar and slide = set the volume;
+- pinch the reactor in the middle = talk to Jarvis (when the HUD was opened from his window);
+- Esc, Q or the FERMER button = quit. The mouse works too (left click = pinch).
 
-Lancer seul :  python jarvis_holo.py            (plein écran)
-               python jarvis_holo.py --fenetre  (dans une fenêtre)
-Ou depuis Jarvis : bouton INTERFACE HOLO, ou menu de son icône près de l'horloge.
+Run it on its own:  python jarvis_holo.py            (full screen)
+                    python jarvis_holo.py --fenetre  (in a window)
+Or from Jarvis: the INTERFACE HOLO button, or the menu of his icon next to the clock.
 
-Comment c'est construit :
-1. HandTracker (jarvis_gestures.py) donne l'image et les 21 points de la main.
-2. Le curseur est lissé par un « filtre 1 euro » : il reste immobile quand la main
-   tremble un peu, et suit sans retard quand elle bouge vite.
-3. Le pincement a deux seuils (hystérésis) : on pince sous PINCH_ON, on relâche au-dessus
-   de PINCH_OFF. Entre les deux, rien ne change : pas de clics en rafale quand on hésite.
-4. Chaque image est dessinée en couches (classe Painter) : fonds translucides, traits
-   lumineux avec un halo flou, textes, puis le curseur par-dessus tout.
+How it's built:
+1. HandTracker (jarvis_gestures.py) provides the image and the 21 points of the hand.
+2. The cursor is smoothed by a "One Euro filter": it stays put when your hand shakes a
+   little, and keeps up without lag when it moves fast.
+3. The pinch has two thresholds (hysteresis): you pinch below PINCH_ON and release above
+   PINCH_OFF. In between nothing changes, so hesitating doesn't fire a burst of clicks.
+4. Each frame is drawn in layers (the Painter class): see-through backgrounds, glowing
+   lines with a blurred halo, text, and then the cursor on top of everything.
 """
 import functools
 import math
@@ -43,35 +42,35 @@ from jarvis_reminders import reminders
 from jarvis_tools import (HOME_CITY, meteo, controle_musique, couper_son, speakers,
                           ouvrir_application, ouvrir_site)
 
-W, H = 1280, 720           # taille de l'image dessinée (agrandie ensuite à la taille de l'écran)
+W, H = 1280, 720           # size of the image we draw (then scaled up to fit the screen)
 WINDOW = "J.A.R.V.I.S - interface holographique"
-TOP_BAR = 62               # hauteur de la barre du haut (les panneaux restent en dessous)
+TOP_BAR = 62               # height of the top bar (panels stay below it)
 
-# Main
-CURSOR_GAIN = 1.35         # amplifie les mouvements : pas besoin d'aller au bord de l'image
-PINCH_ON = 0.28            # pouce-index plus proches que 28 % de la paume = pincement...
-PINCH_OFF = 0.42           # ... qui ne se relâche qu'au-delà de 42 % (hystérésis)
-FILTER_MIN_CUTOFF = 1.0    # filtre 1 euro : plus petit = curseur plus stable mais plus mou
-FILTER_BETA = 0.008        # filtre 1 euro : plus grand = moins de retard quand la main va vite
+# Hand
+CURSOR_GAIN = 1.35         # amplifies your moves, so you don't have to reach the edge of the image
+PINCH_ON = 0.28            # thumb and index closer than 28% of the palm = pinch...
+PINCH_OFF = 0.42           # ...which only lets go above 42% (hysteresis)
+FILTER_MIN_CUTOFF = 1.0    # One Euro filter: smaller = steadier cursor, but more sluggish
+FILTER_BETA = 0.008        # One Euro filter: bigger = less lag when the hand moves fast
 
-# Apparence
-VIDEO_BRIGHTNESS = 0.45    # luminosité de l'image webcam en fond
-FILL_ALPHA = 0.55          # opacité des fonds de panneaux
-GLOW = 1.4                 # intensité du halo autour des traits lumineux
-TOAST_SECONDS = 4.0        # durée d'affichage du résultat d'une action
+# Look
+VIDEO_BRIGHTNESS = 0.45    # brightness of the webcam image in the background
+FILL_ALPHA = 0.55          # opacity of the panel backgrounds
+GLOW = 1.4                 # strength of the glow around the lines
+TOAST_SECONDS = 4.0        # how long an action's result stays on screen
 
-# Données affichées
-DATA_REFRESH = 1.0         # état du PC, volume, rappels : relus chaque seconde
-WEATHER_REFRESH = 15 * 60  # météo : relue tous les quarts d'heure
+# Data on display
+DATA_REFRESH = 1.0         # PC status, volume, reminders: refreshed every second
+WEATHER_REFRESH = 15 * 60  # weather: refreshed every 15 minutes
 
-# Couleurs (OpenCV les écrit dans l'ordre Bleu, Vert, Rouge) : la palette de jarvis_hud.py
+# Colors (OpenCV wants them as Blue, Green, Red): same palette as jarvis_hud.py
 CYAN = (255, 212, 0)
 CYAN_DIM = (92, 74, 14)
 WHITE = (255, 251, 232)
 TEXT_DIM = (153, 138, 95)
 PANEL = (32, 18, 10)
 PANEL_HI = (60, 38, 16)
-ORANGE = (40, 170, 255)    # ce qui est attrapé / pincé
+ORANGE = (40, 170, 255)    # whatever is grabbed / pinched
 ERROR = (94, 77, 255)
 STATE_COLORS = {"listening": (255, 243, 127), "speaking": (255, 230, 95), "error": ERROR}
 
@@ -79,32 +78,32 @@ FONT_FILE = Path(os.environ.get("WINDIR", "C:/Windows")) / "Fonts" / "bahnschrif
 DAYS = ["LUN.", "MAR.", "MER.", "JEU.", "VEN.", "SAM.", "DIM."]
 
 
-# --- Textes ---
-# OpenCV ne sait pas écrire les accents : les textes sont dessinés avec PIL (police Bahnschrift),
-# une seule fois, puis gardés en mémoire (cache) sous forme de masque réutilisé à chaque image.
+# --- Text ---
+# OpenCV can't draw accented letters, so text is rendered with PIL (Bahnschrift font) just once,
+# then cached as a mask that gets reused on every frame.
 
 @functools.lru_cache(maxsize=16)
 def font(size, bold=False):
     try:
         f = ImageFont.truetype(str(FONT_FILE), size)
         if bold:
-            f.set_variation_by_name("Bold")  # Bahnschrift contient plusieurs graisses
+            f.set_variation_by_name("Bold")  # Bahnschrift comes with several weights
     except OSError:
         f = ImageFont.load_default(size)
     return f
 
 
 def clean(text):
-    """Retire les émojis et symboles absents de la police (ils s'afficheraient en carrés)."""
+    """Remove emojis and symbols the font doesn't have (they'd show up as boxes)."""
     return "".join(c for c in str(text) if ord(c) < 0x2190 or 0x2200 <= ord(c) < 0x2300).strip()
 
 
 @functools.lru_cache(maxsize=512)
 def text_mask(text, size, bold=False):
-    """Le texte dessiné en niveaux de gris (0 = vide, 1 = plein), prêt à être « tamponné »."""
+    """The text drawn in grayscale (0 = empty, 1 = solid), ready to be stamped onto the image."""
     f = font(size, bold)
     ascent, descent = f.getmetrics()
-    accent = max(0, -f.getbbox("ÉÈÂ", anchor="la")[1])  # les accents des majuscules dépassent en haut
+    accent = max(0, -f.getbbox("ÉÈÂ", anchor="la")[1])  # accents on capital letters stick out at the top
     img = Image.new("L", (max(1, int(f.getlength(text)) + 2), accent + ascent + descent))
     ImageDraw.Draw(img).text((0, accent), text, font=f, fill=255)
     return np.asarray(img, dtype=np.float32)[:, :, None] / 255
@@ -115,7 +114,7 @@ def text_width(text, size, bold=False):
 
 
 def fit(text, size, width, bold=False):
-    """Raccourcit le texte (avec « … ») pour qu'il tienne dans `width` pixels."""
+    """Shorten the text (ending with "…") so it fits in `width` pixels."""
     text = clean(text)
     if text_width(text, size, bold) <= width:
         return text
@@ -125,7 +124,7 @@ def fit(text, size, width, bold=False):
 
 
 def wrap(text, size, width, max_lines, bold=False):
-    """Découpe le texte en lignes de `width` pixels au plus (« … » s'il en reste)."""
+    """Wrap the text into lines of at most `width` pixels ("…" if some is left over)."""
     lines, current = [], ""
     for word in clean(text).split():
         trial = f"{current} {word}".strip()
@@ -143,31 +142,31 @@ def wrap(text, size, width, max_lines, bold=False):
 
 
 def blit_text(img, text, x, y, size, color, bold=False, anchor="lt"):
-    """Écrit le texte sur l'image. anchor : horizontal (l, c, r) + vertical (t, c, b)."""
+    """Write the text on the image. anchor: horizontal (l, c, r) + vertical (t, c, b)."""
     mask = text_mask(clean(text), size, bold)
     h, w = mask.shape[:2]
     x = int(x - {"l": 0, "c": w // 2, "r": w}[anchor[0]])
     y = int(y - {"t": 0, "c": h // 2, "b": h}[anchor[1]])
     x0, y0, x1, y1 = max(x, 0), max(y, 0), min(x + w, img.shape[1]), min(y + h, img.shape[0])
     if x0 >= x1 or y0 >= y1:
-        return  # entièrement hors de l'image
+        return  # completely outside the image
     a = mask[y0 - y:y1 - y, x0 - x:x1 - x]
     roi = img[y0:y1, x0:x1]
     roi[:] = (roi * (1 - a) + np.array(color, np.float32) * a).astype(np.uint8)
 
 
-# --- Dessin en couches ---
+# --- Drawing in layers ---
 
 def ipt(p):
     return int(round(p[0])), int(round(p[1]))
 
 
 class Painter:
-    """Note tout ce qu'il faut dessiner, dans n'importe quel ordre, puis compose l'image :
-    1. les fonds (translucides : l'image webcam reste visible au travers) ;
-    2. les traits lumineux, recopiés sur un calque flouté qui leur fait un halo ;
-    3. les textes ;
-    4. le curseur et ses effets, par-dessus tout."""
+    """Collects everything to draw, in any order, then puts the image together:
+    1. the backgrounds (see-through, so the webcam image shows behind them);
+    2. the glowing lines, also copied onto a blurred layer that gives them a halo;
+    3. the text;
+    4. the cursor and its effects, on top of everything."""
 
     def __init__(self):
         self.fills, self.shapes, self.texts, self.top = [], [], [], []
@@ -192,7 +191,7 @@ class Painter:
         self._shape(lambda img: cv2.circle(img, ipt(c), int(r), color, th, cv2.LINE_AA), glow, top)
 
     def arc(self, c, r, start, end, color, th=1, glow=True):
-        """Portion de cercle, angles en degrés (0 = à droite, sens des aiguilles d'une montre)."""
+        """Part of a circle; angles in degrees (0 = to the right, going clockwise)."""
         self._shape(lambda img: cv2.ellipse(img, ipt(c), (int(r), int(r)), 0, start, end, color, th,
                                             cv2.LINE_AA), glow, False)
 
@@ -213,7 +212,7 @@ class Painter:
             draw(canvas)
             if glows:
                 draw(glow)
-        # Halo : le calque des traits est réduit, flouté puis ré-agrandi (4x plus rapide qu'en grand)
+        # Halo: the line layer is shrunk, blurred, then scaled back up (4x faster than blurring it full size)
         small = cv2.GaussianBlur(cv2.resize(glow, (W // 4, H // 4), interpolation=cv2.INTER_AREA), (0, 0), 2.5)
         canvas = cv2.addWeighted(canvas, 1.0, cv2.resize(small, (W, H)), GLOW, 0)
         for args in self.texts:
@@ -223,15 +222,15 @@ class Painter:
         return canvas
 
 
-# --- Éléments interactifs ---
+# --- Interactive elements ---
 
 class Button:
-    """Bouton : un texte ou une icône. Coordonnées relatives au panneau qui le contient."""
+    """A button with a label or an icon. Coordinates are relative to its panel."""
 
     def __init__(self, x, y, w, h, label="", action=None, icon=None):
         self.x, self.y, self.w, self.h = x, y, w, h
         self.label, self.action, self.icon = label, action, icon
-        self.flash_until = 0.0  # le bouton s'allume brièvement quand on le « clique »
+        self.flash_until = 0.0  # the button lights up briefly when "clicked"
 
     def contains(self, rx, ry):
         return self.x <= rx < self.x + self.w and self.y <= ry < self.y + self.h
@@ -250,13 +249,13 @@ class Button:
 
 
 class Slider:
-    """Barre de réglage de 0 à 100 : on la pince puis on glisse la main."""
+    """A 0 to 100 slider: pinch it, then slide your hand."""
 
     def __init__(self, x, y, w, h, get, set_):
         self.x, self.y, self.w, self.h = x, y, w, h
         self.get, self.set = get, set_
 
-    def contains(self, rx, ry):  # zone de prise plus haute que la barre : plus facile à viser
+    def contains(self, rx, ry):  # the grab zone is taller than the bar, so it's easier to hit
         return self.x - 10 <= rx < self.x + self.w + 10 and self.y - 16 <= ry < self.y + self.h + 16
 
     def value_at(self, rx):
@@ -273,14 +272,14 @@ class Slider:
 
 
 class Panel:
-    """Panneau lumineux : titre, contenu dessiné par `content(p, x, y, w, h)`, boutons."""
+    """A glowing panel: a title, content drawn by `content(p, x, y, w, h)`, and buttons."""
     TITLE_H = 34
 
     def __init__(self, title, x, y, w, h, content=None, widgets=(), movable=True, frame=True):
         self.title, self.x, self.y, self.w, self.h = title, x, y, w, h
         self.content, self.widgets = content, list(widgets)
         self.movable, self.frame = movable, frame
-        self.on_press = None  # action quand on pince le panneau lui-même (au lieu de le déplacer)
+        self.on_press = None  # what happens when the panel itself is pinched (instead of dragging it)
 
     def contains(self, px, py):
         return self.x <= px < self.x + self.w and self.y <= py < self.y + self.h
@@ -299,7 +298,7 @@ class Panel:
             p.fill_rect(x, y, w, h, PANEL)
             p.rect(x, y, w, h, CYAN_DIM, 1, glow=False)
             for cx, cy, dx, dy in [(x, y, 1, 1), (x + w, y, -1, 1), (x, y + h, 1, -1), (x + w, y + h, -1, -1)]:
-                p.line((cx, cy), (cx + 18 * dx, cy), edge, 2)  # coins lumineux
+                p.line((cx, cy), (cx + 18 * dx, cy), edge, 2)  # glowing corners
                 p.line((cx, cy), (cx, cy + 18 * dy), edge, 2)
             if self.title:
                 p.text(self.title, x + 14, y + 8, 15, edge, bold=True)
@@ -311,7 +310,7 @@ class Panel:
 
 
 class Reactor:
-    """Le réacteur arc au centre. Le pincer = parler à Jarvis."""
+    """The arc reactor in the middle. Pinch it to talk to Jarvis."""
     movable, widgets = False, []
 
     def __init__(self, hud, x, y, r):
@@ -334,11 +333,11 @@ class Reactor:
         p.fill_circle(c, r, PANEL)
         p.circle(c, r, color, 2)
         p.circle(c, r - 10, CYAN_DIM, 1, glow=False)
-        for k in range(3):   # arcs qui tournent
+        for k in range(3):   # spinning arcs
             p.arc(c, r - 22, turn + k * 120, turn + k * 120 + 70, color, 3)
-        for k in range(4):   # arcs extérieurs, en sens inverse
+        for k in range(4):   # outer arcs, spinning the other way
             p.arc(c, r + 14, -turn * 0.6 + k * 90, -turn * 0.6 + k * 90 + 40, CYAN_DIM, 2, glow=False)
-        for k in range(10):  # bobines
+        for k in range(10):  # coils
             p.arc(c, r - 48, k * 36 + 6, k * 36 + 30, color, 9)
         core = r * 0.26 + 5 * pulse
         p.fill_circle(c, core + 8, color)
@@ -347,7 +346,7 @@ class Reactor:
             p.circle(c, r + 26, WHITE, 1)
 
 
-# Icônes des boutons de musique, dessinées avec des formes simples
+# Music button icons, drawn with simple shapes
 def icon_prev(p, cx, cy, c):
     p.poly([(cx + 10, cy - 11), (cx + 10, cy + 11), (cx - 6, cy)], c)
     p.rect(cx - 12, cy - 11, 3, 22, c, -1)
@@ -364,12 +363,12 @@ def icon_play_pause(p, cx, cy, c):
     p.rect(cx + 12, cy - 11, 3, 22, c, -1)
 
 
-# --- Lissage du curseur ---
+# --- Cursor smoothing ---
 
 class OneEuroFilter:
-    """Filtre « 1 euro » (Casiez, Roussel et Vogel, 2012) : un lissage qui s'adapte à la vitesse.
-    Main presque immobile -> lissage fort (le tremblement disparaît) ;
-    main rapide -> lissage faible (le curseur ne traîne pas derrière)."""
+    """The "One Euro filter" (Casiez, Roussel and Vogel, 2012): smoothing that adapts to speed.
+    Hand almost still -> heavy smoothing (the shaking goes away);
+    hand moving fast -> light smoothing (the cursor doesn't trail behind)."""
 
     def __init__(self, min_cutoff=FILTER_MIN_CUTOFF, beta=FILTER_BETA, d_cutoff=1.0):
         self.min_cutoff, self.beta, self.d_cutoff = min_cutoff, beta, d_cutoff
@@ -391,22 +390,22 @@ class OneEuroFilter:
         dt = max(now - self.time, 1e-3)
         self.time = now
         a = self._alpha(self.d_cutoff, dt)
-        self.speed = a * (value - self.value) / dt + (1 - a) * self.speed  # vitesse lissée
+        self.speed = a * (value - self.value) / dt + (1 - a) * self.speed  # smoothed speed
         a = self._alpha(self.min_cutoff + self.beta * np.linalg.norm(self.speed), dt)
         self.value = a * value + (1 - a) * self.value
         return self.value
 
 
-# --- L'interface ---
+# --- The display ---
 
 class HoloHUD:
-    """Interface holographique. Tout (webcam, calcul, dessin, fenêtre) tourne dans UN thread :
-    OpenCV exige que la fenêtre soit gérée par le thread qui l'a créée.
+    """The holographic display. The window and the drawing live in ONE thread, because OpenCV
+    wants a window to be handled by the thread that created it. The webcam has its own thread.
 
-    Liens facultatifs avec la fenêtre de Jarvis (tous appelés depuis le thread du HUD) :
-    on_talk()   : faire écouter Jarvis ;     get_state() : état du réacteur (idle, listening...) ;
-    get_status(): texte de statut ;           get_reply() : dernière réponse de Jarvis ;
-    on_close()  : le HUD est fermé ;          on_error(message) : problème (webcam...)."""
+    Optional hooks into Jarvis's window (all called from the HUD's thread):
+    on_talk()   : make Jarvis listen;         get_state() : reactor state (idle, listening...);
+    get_status(): status text;                get_reply() : Jarvis's last answer;
+    on_close()  : the HUD was closed;         on_error(message) : something went wrong (webcam...)."""
 
     def __init__(self, on_talk=None, get_state=None, get_status=None, get_reply=None,
                  on_close=None, on_error=None, fullscreen=True):
@@ -415,22 +414,22 @@ class HoloHUD:
         self.running = False
         self.data = {"cpu": 0.0, "ram": 0.0, "disk": 0.0, "battery": None, "volume": 0, "muted": False,
                      "reminders": [], "weather": None}
-        self.volume_touched = 0.0    # dernier réglage à la main (la relecture attend un peu)
-        self.volume_control = None   # commande pycaw du thread du HUD (créée au premier réglage)
-        self.crop = None             # comment l'image webcam est recadrée à la taille du HUD
+        self.volume_touched = 0.0    # last time the volume was set by hand (reading it back waits a bit)
+        self.volume_control = None   # pycaw control for the HUD thread (created on first use)
+        self.crop = None             # how the webcam image is cropped to fit the HUD
         self.filter = OneEuroFilter()
         self.cursor, self.ratio, self.pinched = None, 1.0, False
         self.hover_owner = self.hover_widget = None
-        self.drag = None             # fonction appelée pendant qu'on garde la pince (déplacer, glisser)
-        self.dragging = None         # panneau en cours de déplacement
-        self.mouse = None            # (x, y, bouton enfoncé) : la souris remplace la main si besoin
-        self.ripples = []            # ondes affichées à chaque pincement : (x, y, instant)
+        self.drag = None             # called while the pinch is held (dragging, sliding)
+        self.dragging = None         # panel being dragged
+        self.mouse = None            # (x, y, button down): the mouse stands in for the hand if needed
+        self.ripples = []            # ripples shown on each pinch: (x, y, time)
         self.toast_text, self.toast_time = "", -TOAST_SECONDS
         self.fps = 0.0
         self.reactor = Reactor(self, W // 2, 282, 105)
         self.panels = self.build_panels()
 
-    # --- Panneaux ---
+    # --- Panels ---
 
     def build_panels(self):
         act = self.act
@@ -453,7 +452,7 @@ class HoloHUD:
                 Button(226, 52, 58, 46, "MUET", lambda: act(couper_son))]),
             Panel("APPLIS", 950, 356, 300, 260, widgets=[
                 Button(16 + (i % 2) * 140, 48 + (i // 2) * 68, 128, 56, label,
-                       lambda fn=fn, arg=arg: act(fn, arg))  # fn=fn : fige la valeur de CE tour de boucle
+                       lambda fn=fn, arg=arg: act(fn, arg))  # fn=fn pins down the value from THIS loop iteration
                 for i, (label, fn, arg) in enumerate(apps)]),
         ]
 
@@ -475,7 +474,7 @@ class HoloHUD:
             for i, line in enumerate(wrap(text, 14, w - 32, 4)):
                 p.text(line, x + 16, y + 46 + 22 * i, 14, ERROR)
             return
-        # Texte de wttr.in : « Lieu : Ciel, +29°C (ressenti +33°C), vent ↑11km/h, humidité 70% »
+        # wttr.in text looks like: "Place : Sky, +29°C (ressenti +33°C), vent ↑11km/h, humidité 70%"
         place, _, rest = text.partition(" : ")
         temp = re.search(r"([+-]?\d+)\s*°C", rest)
         if temp:
@@ -537,12 +536,12 @@ class HoloHUD:
     # --- Actions ---
 
     def toast(self, text):
-        """Affiche un message en bas de l'écran pendant quelques secondes."""
+        """Show a message at the bottom of the screen for a few seconds."""
         self.toast_text, self.toast_time = str(text), time.monotonic()
 
     def act(self, fn, *args):
-        """Lance un outil de Jarvis dans un thread (ouvrir une appli peut prendre du temps :
-        l'image ne doit pas se figer), puis affiche ce qu'il répond."""
+        """Run one of Jarvis's tools in a thread (opening an app can take a while, and the
+        image mustn't freeze), then show what it returns."""
         def run():
             try:
                 self.toast(fn(*args))
@@ -551,13 +550,13 @@ class HoloHUD:
         threading.Thread(target=run, daemon=True).start()
 
     def set_volume(self, level):
-        """Appelée en continu pendant qu'on glisse sur la barre de volume."""
+        """Called over and over while you slide along the volume bar."""
         self.volume_touched = time.monotonic()
         if level == self.data["volume"] and not self.data["muted"]:
             return
         self.data["volume"], self.data["muted"] = level, False
         if self.volume_control is None:
-            self.volume_control = speakers() or False  # False : indisponible, inutile de réessayer
+            self.volume_control = speakers() or False  # False = not available, no point trying again
         if self.volume_control:
             self.volume_control.SetMasterVolumeLevelScalar(level / 100, None)
             self.volume_control.SetMute(0, None)
@@ -571,20 +570,20 @@ class HoloHUD:
     def close(self):
         self.running = False
 
-    # --- Données (thread séparé : lire la météo prend plusieurs secondes) ---
+    # --- Data (in its own thread, since fetching the weather takes a few seconds) ---
 
     def data_loop(self):
-        control = speakers()  # pycaw passe par COM : une commande par thread
+        control = speakers()  # pycaw goes through COM: one control per thread
         next_weather = 0.0
-        psutil.cpu_percent(None)  # la 1re mesure sert de point de départ
+        psutil.cpu_percent(None)  # the first reading is just a starting point
         while self.running:
             d = self.data
-            d["cpu"] = psutil.cpu_percent(None)  # utilisation depuis la mesure précédente
+            d["cpu"] = psutil.cpu_percent(None)  # usage since the previous reading
             d["ram"] = psutil.virtual_memory().percent
             d["disk"] = psutil.disk_usage("C:\\").percent
-            battery = psutil.sensors_battery()  # None sur un PC fixe
+            battery = psutil.sensors_battery()  # None on a desktop PC
             d["battery"] = (battery.percent, battery.power_plugged) if battery else None
-            if control and time.monotonic() - self.volume_touched > 1.5:  # pas pendant un réglage
+            if control and time.monotonic() - self.volume_touched > 1.5:  # not while you're adjusting it
                 try:
                     d["volume"] = round(control.GetMasterVolumeLevelScalar() * 100)
                     d["muted"] = bool(control.GetMute())
@@ -596,27 +595,27 @@ class HoloHUD:
                 threading.Thread(target=lambda: d.update(weather=meteo(HOME_CITY)), daemon=True).start()
             time.sleep(DATA_REFRESH)
 
-    # --- Main et souris ---
+    # --- Hand and mouse ---
 
     def set_crop(self, frame):
-        """L'image webcam (souvent 4:3) est agrandie puis rognée en haut et en bas pour remplir
-        le HUD (16:9). On retient le calcul pour placer la main au bon endroit."""
+        """The webcam image (often 4:3) is scaled up and trimmed at the top and bottom to fill
+        the HUD (16:9). We keep the numbers so the hand ends up in the right place."""
         fh, fw = frame.shape[:2]
         if self.crop is None or self.crop[3:] != (fw, fh):
             scale = max(W / fw, H / fh)
             self.crop = (scale, (fw * scale - W) / 2, (fh * scale - H) / 2, fw, fh)
 
     def to_canvas(self, nx, ny):
-        """Point MediaPipe (fractions de l'image webcam) -> pixels du HUD."""
+        """MediaPipe point (fractions of the webcam image) -> HUD pixels."""
         scale, ox, oy, fw, fh = self.crop
         return nx * fw * scale - ox, ny * fh * scale - oy
 
     def hand_pointer(self, hand):
-        """Position du curseur (entre pouce et index, amplifiée) et écart pouce-index / paume."""
+        """Cursor position (between thumb and index, amplified) and the thumb-index gap / palm size."""
         points, aspect = hand
-        dist = lambda a, b: math.hypot((a.x - b.x) * aspect, a.y - b.y)  # vraies proportions
+        dist = lambda a, b: math.hypot((a.x - b.x) * aspect, a.y - b.y)  # true proportions
         ratio = dist(points[4], points[8]) / max(dist(points[0], points[9]), 1e-6)
-        # Le milieu pouce-index bouge peu quand on pince : le clic ne décale pas le curseur
+        # The thumb-index midpoint barely moves when you pinch, so clicking doesn't shift the cursor
         x, y = self.to_canvas((points[4].x + points[8].x) / 2, (points[4].y + points[8].y) / 2)
         x = min(max(W / 2 + (x - W / 2) * CURSOR_GAIN, 0), W - 1)
         y = min(max(H / 2 + (y - H / 2) * CURSOR_GAIN, 0), H - 1)
@@ -629,36 +628,36 @@ class HoloHUD:
         self.mouse = (x, y, down)
 
     def track(self, hand, now):
-        """Met à jour le curseur à partir de la main (sinon de la souris)."""
+        """Update the cursor from the hand (or from the mouse if there's no hand)."""
         if hand is not None:
             (x, y), self.ratio = self.hand_pointer(hand)
             x, y = self.filter((x, y), now)
-            pinched = self.ratio < (PINCH_OFF if self.pinched else PINCH_ON)  # hystérésis
+            pinched = self.ratio < (PINCH_OFF if self.pinched else PINCH_ON)  # hysteresis
             self.pointer(x, y, pinched, now)
         elif self.mouse:
             x, y, down = self.mouse
             self.ratio = 0.0 if down else 1.0
             self.pointer(x, y, down, now)
-        else:  # main perdue de vue : on lâche tout
+        else:  # hand lost from view: let go of everything
             self.filter.reset()
             self.cursor = self.hover_owner = self.hover_widget = None
             self.release()
 
     def hit(self, x, y):
-        """(élément, bouton) sous le curseur : d'abord les panneaux du dessus."""
+        """(element, button) under the cursor, checking the topmost panels first."""
         for owner in list(reversed(self.panels)) + [self.reactor]:
             if owner.contains(x, y):
                 return owner, owner.widget_at(x, y)
         return None, None
 
     def pointer(self, x, y, pinched, now):
-        """Cœur de l'interaction : position du curseur + pince fermée ou non."""
+        """The heart of the interaction: cursor position + whether the pinch is closed."""
         self.cursor = (x, y)
-        if not self.drag:  # pendant un déplacement, on garde l'élément attrapé
+        if not self.drag:  # while dragging, hold on to whatever was grabbed
             self.hover_owner, self.hover_widget = self.hit(x, y)
-        if pinched and not self.pinched:  # la pince vient de se fermer : « clic »
+        if pinched and not self.pinched:  # the pinch just closed: that's a click
             self.press(x, y, now)
-        elif pinched and self.drag:        # pince maintenue : on déplace / on glisse
+        elif pinched and self.drag:        # pinch held: drag / slide
             self.drag(x, y)
         elif not pinched:
             self.release()
@@ -679,7 +678,7 @@ class HoloHUD:
         elif owner is not None and owner.movable:
             dx, dy = x - owner.x, y - owner.y
             self.panels.remove(owner)
-            self.panels.append(owner)  # passe au premier plan
+            self.panels.append(owner)  # bring it to the front
             self.dragging = owner
             self.drag = lambda x, y: owner.move_to(x - dx, y - dy)
 
@@ -687,10 +686,10 @@ class HoloHUD:
         self.drag = self.dragging = None
         self.pinched = False
 
-    # --- Dessin ---
+    # --- Drawing ---
 
     def make_backdrop(self):
-        """Quadrillage bleu nuit et bords assombris, calculés une seule fois."""
+        """Midnight blue grid and darkened edges, computed just once."""
         grid = np.zeros((H, W, 3), np.uint8)
         grid[:] = (18, 10, 4)
         grid[::40, :] = grid[:, ::40] = (44, 30, 10)
@@ -701,7 +700,7 @@ class HoloHUD:
 
     def background(self, frame):
         scale, ox, oy, fw, fh = self.crop
-        # On rogne d'abord la petite image, puis on l'agrandit une seule fois (plus rapide)
+        # Trim the small image first, then scale it up once (faster)
         x0, y0 = round(ox / scale), round(oy / scale)
         img = cv2.resize(frame[y0:fh - y0, x0:fw - x0], (W, H))
         img = cv2.addWeighted(img, VIDEO_BRIGHTNESS, self.grid, 1.0, 0)
@@ -716,19 +715,19 @@ class HoloHUD:
 
     def draw_cursor(self, p, now):
         self.ripples = [r for r in self.ripples if now - r[2] < 0.4]
-        for x, y, t0 in self.ripples:  # onde qui s'élargit à chaque pincement
+        for x, y, t0 in self.ripples:  # a ripple that grows on each pinch
             age = (now - t0) / 0.4
             p.circle((x, y), 12 + 50 * age, ORANGE, max(1, int(4 * (1 - age))), top=True)
         if self.cursor is None:
             return
         x, y = self.cursor
         color = ORANGE if self.pinched else WHITE if self.hover_owner else CYAN
-        # Le cercle rétrécit à mesure que pouce et index se rapprochent : on voit venir le clic
+        # The circle shrinks as thumb and index get closer, so you can see the click coming
         openness = min(max((self.ratio - PINCH_ON) / (0.9 - PINCH_ON), 0), 1)
         r = 8 + 18 * openness
         p.circle((x, y), r, color, 2, top=True)
         p.circle((x, y), 3, color, -1, top=True)
-        for dx, dy in [(1, 0), (-1, 0), (0, 1), (0, -1)]:  # petits repères en croix
+        for dx, dy in [(1, 0), (-1, 0), (0, 1), (0, -1)]:  # small crosshair ticks
             p.line((x + dx * (r + 4), y + dy * (r + 4)), (x + dx * (r + 10), y + dy * (r + 10)), color, 2, top=True)
         if self.pinched:
             p.circle((x, y), r + 5, color, 1, top=True)
@@ -754,16 +753,16 @@ class HoloHUD:
         return p.compose(self.background(frame))
 
     def step(self, frame, hand, now):
-        """Une image : suivre la main, réagir, dessiner. Retourne l'image à afficher."""
+        """One frame: follow the hand, react, draw. Returns the image to show."""
         self.set_crop(frame)
         self.track(hand, now)
         return self.render(frame, hand, now)
 
-    # --- Boucle principale ---
+    # --- Main loop ---
 
     def start(self, wait_for=None):
-        """Lance le HUD dans son propre thread. wait_for : fonction qui renvoie True quand la
-        webcam est libre (la surveillance des gestes doit d'abord l'avoir relâchée)."""
+        """Start the HUD in its own thread. wait_for: a function that returns True once the
+        webcam is free (gesture watching has to let go of it first)."""
         self.running = True
 
         def go():
@@ -774,9 +773,9 @@ class HoloHUD:
         threading.Thread(target=go, daemon=True).start()
 
     def capture_loop(self, latest, ready):
-        """Thread de capture : lit la webcam et repère la main (~50 ms par image) pendant que
-        le thread principal dessine l'image précédente (~25 ms). Les deux travaillent en même
-        temps : ~20 images par seconde au lieu de ~13 s'ils attendaient l'un après l'autre."""
+        """Capture thread: reads the webcam and finds the hand (~50 ms per frame) while the main
+        thread draws the previous frame (~25 ms). Since both work at the same time we get
+        ~30 frames per second, versus ~13 when they waited on each other."""
         tracker = None
         try:
             tracker = HandTracker()
@@ -789,7 +788,7 @@ class HoloHUD:
             ready.set()
         finally:
             if tracker:
-                tracker.close()  # éteint la webcam
+                tracker.close()  # turns the webcam off
 
     def run(self):
         self.running = True
@@ -812,8 +811,8 @@ class HoloHUD:
                 ready.clear()
                 if "error" in latest:
                     raise latest["error"]
-                frame, hand, now = latest["image"]  # la plus récente (on saute les images en retard)
-                self.fps = 0.9 * self.fps + 0.1 / max(now - last, 1e-3)  # images par seconde, lissé
+                frame, hand, now = latest["image"]  # the latest one (frames we fell behind on are skipped)
+                self.fps = 0.9 * self.fps + 0.1 / max(now - last, 1e-3)  # frames per second, smoothed
                 last = now
                 cv2.imshow(WINDOW, self.step(frame, hand, now))
                 key = cv2.waitKey(1) & 0xFF
@@ -826,7 +825,7 @@ class HoloHUD:
         finally:
             self.running = False
             if capture.is_alive():
-                capture.join(timeout=3)  # attend que la webcam soit éteinte
+                capture.join(timeout=3)  # wait for the webcam to be turned off
             try:
                 cv2.destroyWindow(WINDOW)
             except cv2.error:

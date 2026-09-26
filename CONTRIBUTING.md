@@ -1,34 +1,37 @@
-# Contribuer à Jarvis
+# Contributing to Jarvis
 
-Merci de ton aide ! Quelques règles simples pour que tout le monde s'y retrouve.
+First off, thanks for wanting to help. Here's how we keep things smooth.
 
-## Avant de commencer
+## Before you start
 
-1. Lis le README et les commentaires en haut des fichiers que tu modifies : ils expliquent
-   l'architecture et les choix techniques (beaucoup d'essais ont déjà été faits et mesurés).
-2. Pour une grosse modification, ouvre d'abord une **issue** pour en discuter.
+1. Skim the README and the comments at the top of the files you'll touch. They explain
+   how everything fits together, and a lot of things have already been tried and measured.
+2. For anything big, open an **issue** first so we can talk it through.
 
-## Façon de travailler
+## How we work
 
-- Crée une **branche** à partir de `main` (`git switch -c ma-fonction`), puis ouvre une
-  **pull request**. On ne pousse pas directement sur `main`.
-- **Français** partout : commentaires, messages affichés, messages de commit.
-- Code **commenté** et simple : le projet sert aussi à apprendre.
-- **Gratuit et local** : pas d'API payante ni de service qui demande une clé.
-- **Aucune donnée personnelle** dans les commits : prénom, ville, mémoire, exemples de
-  gestes... restent dans les fichiers ignorés (`config.json`, `memory.json`, etc.).
-  Vérifie `git status` avant chaque commit.
+- Create a **branch** from `main` (`git switch -c my-feature`) and open a **pull request**.
+  Nobody pushes straight to `main`.
+- **Code, comments, docs and commit messages are in English.** Jarvis himself speaks French,
+  so anything the user sees or hears stays in French for now (that includes the system
+  prompt and the tool docstrings, which the model reads).
+- Keep the code **simple and commented**. People read this project to learn.
+- **Free and local**: no paid APIs, no services that need a key.
+- **No personal data in commits**: names, cities, memories, gesture examples... all stay in
+  ignored files (`config.json`, `memory.json`, etc.). Check `git status` before committing.
 
-## Tester
+## Testing
 
-- **Ne touche jamais à tes vraies données pendant un test** : redirige `core.BASE_DIR`,
-  `core.MEMORY_FILE`, `core.FACTS_FILE`, `jarvis_ui.STATE_FILE` et `tools.reminders` vers un
-  dossier temporaire : `ask_model` écrit dans l'historique et dans la mémoire à long terme.
-- **Mesure avant de conclure** : temps de réponse, précision, images par seconde. Donne les
-  chiffres dans la pull request, même décevants.
-- Décris dans la pull request ce que tu as vérifié en vrai (micro, webcam, fenêtre).
+- **Never touch your real data while testing.** Point `core.BASE_DIR`, `core.MEMORY_FILE`,
+  `core.FACTS_FILE`, `jarvis_ui.STATE_FILE` and `tools.reminders` at a temp folder:
+  `ask_model` writes to both the history and long-term memory.
+- **Measure before you conclude**: response time, accuracy, frames per second. Put the
+  numbers in your pull request, even if they're not great.
+- In the pull request, say what you actually tried for real (mic, webcam, window).
+- If you touch a tool docstring, re-test how the model uses that tool: those docstrings
+  are part of the prompt.
 
-## Ajouter un outil
+## Adding a tool
 
-Voir l'en-tête de `jarvis_tools.py` : une fonction typée, une docstring claire qui dit
-**quand** l'utiliser (et quand ne pas l'utiliser), et le décorateur `@tool("libellé...")`.
+See the top of `jarvis_tools.py`: a function with typed parameters, a clear docstring that
+says **when** to use it (and when not to), and the `@tool("label...")` decorator.
