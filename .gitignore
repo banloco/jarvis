@@ -5,6 +5,7 @@ long_term.json
 long_term.*.npy
 gestures_data*.npz
 gestures_model.joblib
+reminders.json
 
 # Téléchargés automatiquement (modèle de main MediaPipe, données HaGRID)
 models/

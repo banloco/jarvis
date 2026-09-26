@@ -8,6 +8,7 @@ from rich.panel import Panel
 from jarvis_core import load_history, listen_voice, ask_model, warm_up
 from jarvis_voice import Speaker
 from jarvis_tools import TOOLS
+from jarvis_reminders import reminders
 
 console = Console()   # affichage coloré dans le terminal
 speaker = Speaker()
@@ -47,6 +48,10 @@ def main():
     warm_up(history, TOOLS, on_error=lambda msg: console.print(f"[red]{msg}[/red]"))
     console.print(Panel("JARVIS — Système vocal en ligne", style="bold cyan"))
     speak("Jarvis en ligne. Je vous écoute.")
+    # Rappels : annoncés dans le terminal et à voix haute, même pendant la saisie
+    reminders.on_due = lambda message, late: speak(
+        f"Rappel manqué (il y a {late} min) : {message}" if late else f"Rappel : {message}")
+    reminders.start()
 
     while True:
         try:

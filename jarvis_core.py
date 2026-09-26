@@ -214,12 +214,13 @@ def read_frames(frames_queue):
         yield frames_queue.get()
 
 
-def record_until_silence(frames, noise_floor=None):
+def record_until_silence(frames, noise_floor=None, no_speech=NO_SPEECH):
     """Lit des blocs audio jusqu'à ce que l'utilisateur ait fini de parler.
 
     frames      : itérable de blocs int16 de 80 ms (venant du micro)
     noise_floor : volume du bruit ambiant, s'il est connu ; sinon il est mesuré
                   sur les premiers blocs (on suppose qu'on ne parle pas pile au début)
+    no_speech   : secondes d'attente maximum si personne ne commence à parler
     Retourne l'audio complet (np.ndarray), ou None si personne n'a parlé.
     """
     per_second = SAMPLE_RATE / FRAME  # 12,5 blocs par seconde
@@ -240,7 +241,7 @@ def record_until_silence(frames, noise_floor=None):
 
         if heard and silent_frames >= SILENCE_END * per_second:
             break  # fin de phrase
-        if not heard and len(chunks) >= NO_SPEECH * per_second:
+        if not heard and len(chunks) >= no_speech * per_second:
             return None  # personne n'a parlé
         if len(chunks) >= MAX_COMMAND * per_second:
             break  # sécurité : demande trop longue

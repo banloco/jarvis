@@ -9,6 +9,10 @@ Fonctionnement :
 
 L'écoute est mise en pause pendant que Jarvis réfléchit ou parle (is_paused),
 sinon il pourrait se déclencher en s'entendant lui-même.
+
+Mode conversation : après une réponse, l'interface appelle listen_again(). Dès que Jarvis
+a fini de parler, un bip grave signale qu'il écoute encore FOLLOWUP_SECONDS secondes,
+sans « Hey Jarvis ». Si personne ne parle, il se rendort (on_idle).
 """
 import queue
 import threading
@@ -20,24 +24,33 @@ from jarvis_core import mic_stream, read_frames, record_until_silence, transcrib
 WAKE_MODEL = "hey_jarvis"  # modèle pré-entraîné fourni par openWakeWord
 WAKE_THRESHOLD = 0.5       # confiance minimale (0 à 1) : baisse-le s'il ne t'entend pas,
                            # monte-le s'il se déclenche tout seul
+FOLLOWUP_SECONDS = 5       # mode conversation : durée d'écoute après une réponse (0 = désactivé)
 
 
 class WakeWordListener:
-    def __init__(self, on_wake, on_command, on_error, is_paused=lambda: False):
+    def __init__(self, on_wake, on_command, on_error, is_paused=lambda: False, on_idle=lambda: None):
         """
-        on_wake()               : « Hey Jarvis » détecté, l'enregistrement commence
+        on_wake(suite)          : l'écoute commence (suite=True en mode conversation)
         on_command(texte, err)  : demande transcrite (texte), ou message d'erreur (err)
         on_error(message)       : le réveil vocal ne peut pas fonctionner
         is_paused() -> bool     : True quand il ne faut pas écouter (Jarvis occupé / parle)
+        on_idle()               : mode conversation terminé sans que personne ne parle
         """
         self.on_wake = on_wake
         self.on_command = on_command
         self.on_error = on_error
         self.is_paused = is_paused
-        self.enabled = True  # interrupteur on/off (bouton 👂 de l'interface)
+        self.on_idle = on_idle
+        self.enabled = True     # interrupteur on/off (bouton ÉCOUTE de l'interface)
+        self.followup = False   # True = écouter une suite dès que Jarvis a fini de parler
 
     def start(self):
         threading.Thread(target=self._run, daemon=True).start()
+
+    def listen_again(self):
+        """Mode conversation : écouter une suite, sans « Hey Jarvis », après la réponse."""
+        if self.enabled and FOLLOWUP_SECONDS > 0:
+            self.followup = True
 
     def _run(self):
         try:
@@ -67,17 +80,30 @@ class WakeWordListener:
                             paused = True
                         continue
                     paused = False
-
                     levels.append(volume(frame))
+                    noise = float(np.percentile(levels, 20))  # bruit ambiant estimé
+
+                    # Mode conversation : Jarvis vient de finir de parler, on écoute la suite
+                    if self.followup:
+                        self.followup = False
+                        self.on_wake(True)
+                        winsound.Beep(660, 90)  # bip plus grave et court : « je t'écoute encore »
+                        audio = record_until_silence(read_frames(frames), noise_floor=noise,
+                                                     no_speech=FOLLOWUP_SECONDS)
+                        if audio is None:
+                            self.on_idle()  # personne n'a parlé : Jarvis se rendort, sans message
+                        else:
+                            self.on_command(*transcribe(audio))
+                        continue
+
                     if model.predict(frame)[WAKE_MODEL] < WAKE_THRESHOLD:
                         continue
 
                     # « Hey Jarvis » détecté
                     model.reset()
-                    self.on_wake()
+                    self.on_wake(False)
                     winsound.Beep(880, 120)  # bip : « je t'écoute »
-                    audio = record_until_silence(read_frames(frames),
-                                                 noise_floor=float(np.percentile(levels, 20)))
+                    audio = record_until_silence(read_frames(frames), noise_floor=noise)
                     self.on_command(*transcribe(audio))
         except Exception as e:
             self.on_error(f"Micro indisponible : {e}")

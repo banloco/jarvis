@@ -14,6 +14,7 @@ Pour ajouter un outil :
   (c'est ce que lit le modèle pour savoir QUAND l'utiliser : soigner la 1re phrase) ;
 - la décorer avec @tool("texte affiché dans la barre de statut pendant l'exécution").
 """
+import csv
 import ctypes
 import difflib
 import functools
@@ -21,12 +22,15 @@ import os
 import re
 import shutil
 import subprocess
+import time
 import webbrowser
+from datetime import datetime, timedelta
 from pathlib import Path
 from urllib.parse import quote, quote_plus
 from urllib.request import Request, urlopen
 from ddgs import DDGS
 from jarvis_core import add_fact, now_text
+from jarvis_reminders import reminders
 
 DOCUMENTS_DIR = Path.home() / "Documents"  # seul dossier que Jarvis peut lire / modifier
 TOOLS = []  # rempli automatiquement par @tool, puis passé à ask_model par les interfaces
@@ -92,6 +96,78 @@ def meteo(ville: str) -> str:
 def heure_et_date() -> str:
     """Donne la date et l'heure actuelles."""
     return now_text()
+
+
+# --- Minuteurs et rappels (voir jarvis_reminders.py) ---
+
+def parse_heure(texte):
+    """« 18:30 », « 18h30 », « 18h », « 8 h 05 » -> (heures, minutes), ou None."""
+    # heures, puis éventuellement « h » ou « : » suivi des minutes
+    match = re.fullmatch(r"\s*(\d{1,2})\s*(?:(?:h|:)\s*(\d{2})?)?\s*", texte.lower())
+    if not match:
+        return None
+    hours = int(match.group(1))
+    minutes = int(match.group(2)) if match.group(2) else 0
+    return (hours, minutes) if hours < 24 and minutes < 60 else None
+
+
+def duree_texte(seconds):
+    """3725 -> « 1 h 2 min »."""
+    minutes = max(1, round(seconds / 60))
+    return f"{minutes // 60} h {minutes % 60} min" if minutes >= 60 else f"{minutes} min"
+
+
+@tool("⏰ Création du rappel...")
+def creer_rappel(message: str, minutes: float = 0, heure: str = "") -> str:
+    """Crée un minuteur ou un rappel : Jarvis préviendra l'utilisateur à voix haute au bon moment.
+    Pour « dans 20 minutes » ou « un minuteur de 5 minutes », utiliser minutes.
+    Pour « à 18h30 », utiliser heure.
+
+    Args:
+        message: Ce qu'il faudra rappeler, par exemple « sortir le linge » ou « minuteur terminé »
+        minutes: Dans combien de minutes prévenir (0 si une heure précise est donnée)
+        heure: Heure précise au format HH:MM, par exemple « 18:30 » (vide si minutes est donné)
+    """
+    now = datetime.now()
+    if heure:
+        parsed = parse_heure(heure)
+        if not parsed:
+            return f"Heure « {heure} » incompréhensible : utiliser le format HH:MM."
+        due = now.replace(hour=parsed[0], minute=parsed[1], second=0, microsecond=0)
+        if due <= now:
+            due += timedelta(days=1)  # heure déjà passée aujourd'hui : c'est pour demain
+    elif minutes and float(minutes) > 0:
+        due = now + timedelta(minutes=float(minutes))
+    else:
+        return "Il faut préciser dans combien de minutes, ou à quelle heure."
+    reminders.add(message, due)
+    day = "" if due.date() == now.date() else " demain"
+    return f"Rappel « {message} » prévu{day} à {due:%H:%M} (dans {duree_texte((due - now).total_seconds())})."
+
+
+@tool("⏰ Lecture des rappels...")
+def lister_rappels() -> str:
+    """Liste les minuteurs et rappels prévus."""
+    items = reminders.pending()
+    if not items:
+        return "Aucun rappel prévu."
+    now = datetime.now()
+    return "\n".join(f"- {datetime.fromisoformat(i['due']):%H:%M} (dans "
+                     f"{duree_texte((datetime.fromisoformat(i['due']) - now).total_seconds())}) : {i['message']}"
+                     for i in items)
+
+
+@tool("⏰ Annulation du rappel...")
+def annuler_rappel(recherche: str) -> str:
+    """Annule un minuteur ou un rappel prévu.
+
+    Args:
+        recherche: Un mot du rappel à annuler (ex : « linge »), ou « tous » pour tout annuler
+    """
+    removed = reminders.cancel(recherche)
+    if not removed:
+        return f"Aucun rappel ne correspond à « {recherche} »."
+    return "Annulé : " + ", ".join(f"« {i['message']} »" for i in removed)
 
 
 # --- Fichiers (limités au dossier Documents) ---
@@ -228,6 +304,145 @@ def ouvrir_application(nom: str) -> str:
         return f"Aucune application « {nom} » trouvée sur le PC.{hint}"
     subprocess.Popen(["cmd", "/c", "start", "", target], creationflags=subprocess.CREATE_NO_WINDOW)
     return f"{nom} lancé."
+
+
+# Programmes à ne JAMAIS fermer : Windows lui-même, Ollama (le cerveau), Python (Jarvis !)
+PROTECTED = {"explorer", "python", "pythonw", "ollama", "ollama app", "svchost", "system", "csrss",
+             "wininit", "winlogon", "lsass", "services", "dwm", "smss", "conhost", "sihost",
+             "fontdrvhost", "taskhostw", "runtimebroker", "searchhost", "startmenuexperiencehost",
+             "shellexperiencehost", "textinputhost", "ctfmon", "registry", "audiodg"}
+
+# Nom dit par l'utilisateur -> nom(s) du programme en cours d'exécution (sans « .exe »)
+PROCESS_NAMES = {
+    "word": ["winword"], "powerpoint": ["powerpnt"], "edge": ["msedge"],
+    "vs code": ["code"], "vscode": ["code"], "visual studio code": ["code"],
+    "bloc-notes": ["notepad"], "calculatrice": ["calculatorapp", "calculator"], "paint": ["mspaint"],
+    "gestionnaire des tâches": ["taskmgr"], "obs": ["obs64"], "obs studio": ["obs64"],
+    "league of legends": ["league of legends", "leagueclientux", "leagueclient", "riotclientux"],
+    "lol": ["league of legends", "leagueclientux", "leagueclient", "riotclientux"],
+    "riot": ["riotclientux", "riotclientservices"],
+}
+
+
+# Programmes où l'on peut avoir du travail non enregistré : jamais de fermeture forcée
+NEVER_FORCE = {"winword", "excel", "powerpnt", "notepad", "code", "mspaint", "onenote", "outlook"}
+
+
+def running_programs():
+    """Noms (en minuscules, sans .exe) des programmes en cours d'exécution."""
+    out = subprocess.run(["tasklist", "/FO", "CSV", "/NH"], capture_output=True, text=True,
+                         errors="replace", creationflags=subprocess.CREATE_NO_WINDOW).stdout
+    return {row[0].lower().removesuffix(".exe") for row in csv.reader(out.splitlines()) if row}
+
+
+@tool("❌ Fermeture de l'application...")
+def fermer_application(nom: str, forcer: bool = False) -> str:
+    """Ferme une application ouverte sur le PC (Spotify, Chrome, Word, un jeu...).
+
+    Args:
+        nom: Le nom de l'application à fermer
+        forcer: True seulement si l'utilisateur demande de forcer la fermeture (le travail non enregistré est perdu)
+    """
+    key = nom.lower().strip()
+    compact = key.replace(" ", "")
+    running = running_programs() - PROTECTED
+    wanted = PROCESS_NAMES.get(key, [key, compact])
+    # Correspondance STRICTE : un nom trop vague fermerait le mauvais programme (« spotify »
+    # visait « spotifyxboxgamebarwebview », un module de la Xbox Game Bar).
+    targets = [p for p in running if p in wanted]
+    if not targets:  # presque exact : « obs » -> « obs64 » (3 caractères de plus au maximum)
+        targets = [p for p in running if p.startswith(compact) and len(p) - len(compact) <= 3]
+    if not targets:  # faute de frappe : « discrod » -> « discord »
+        targets = difflib.get_close_matches(compact, running, n=1, cutoff=0.85)
+    if not targets:
+        return f"Aucune application « {nom} » n'est ouverte."
+
+    def kill(programs, force):
+        # Sans /F : Windows demande poliment à l'appli de se fermer (comme cliquer sur la croix),
+        # elle peut donc proposer d'enregistrer. Avec /F : fermeture immédiate, sans question.
+        for program in programs:
+            command = ["taskkill", "/IM", f"{program}.exe", "/T"] + (["/F"] if force else [])
+            subprocess.run(command, capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW)
+        time.sleep(2)  # laisse le temps de se fermer
+        return [p for p in programs if p in running_programs()]
+
+    # Toujours une fermeture normale d'abord (le modèle demande parfois « forcer » sans raison)
+    still_open = kill(targets, force=False)
+    if still_open and forcer:
+        # Forcer seulement si aucun travail ne peut être perdu (jamais Word, Bloc-notes...)
+        still_open = kill([p for p in still_open if p not in NEVER_FORCE], force=True) + \
+                     [p for p in still_open if p in NEVER_FORCE]
+    if still_open:
+        return (f"Fermeture demandée, mais {', '.join(still_open)} est encore ouvert : il attend peut-être "
+                "une confirmation (enregistrer ?) ou reste dans la barre des tâches.")
+    return f"{', '.join(targets)} fermé."
+
+
+# --- Musique ---
+
+VK_MEDIA_NEXT, VK_MEDIA_PREV, VK_MEDIA_PLAY_PAUSE = 0xB0, 0xB1, 0xB3  # touches multimédia
+
+
+@tool("🎵 Contrôle de la musique...")
+def controle_musique(action: str) -> str:
+    """Contrôle la musique ou la vidéo DÉJÀ en cours (Spotify, YouTube...) : mettre en pause,
+    reprendre, passer à la chanson suivante (« suivant », « passe », « prochaine ») ou revenir
+    à la précédente. Pour lancer une nouvelle chanson précise, utiliser jouer_musique.
+
+    Args:
+        action: « pause », « lecture », « suivant » ou « precedent »
+    """
+    action = action.lower().strip()
+    if action.startswith(("suiv", "next", "passe", "proch")):  # « prochain » avant le test « pr »
+        _press(VK_MEDIA_NEXT)
+        return "Morceau suivant."
+    if action.startswith(("pr", "prev", "reviens")):  # précédent / precedent / previous
+        _press(VK_MEDIA_PREV)
+        return "Morceau précédent."
+    _press(VK_MEDIA_PLAY_PAUSE)  # une seule touche pour pause ET reprise (bascule)
+    return "Lecture mise en pause ou reprise."
+
+
+@tool("🎶 Lancement de la musique...")
+def jouer_musique(recherche: str, plateforme: str = "youtube") -> str:
+    """Lance une NOUVELLE chanson, un artiste ou une playlist précis demandé par l'utilisateur
+    (« mets du Drake », « joue de la musique lofi »). Pas pour pause / suivant : voir controle_musique.
+
+    Args:
+        recherche: Ce qu'il faut jouer, par exemple « Drake God's Plan » ou « musique lofi »
+        plateforme: Toujours « youtube » (lecture automatique), SAUF si l'utilisateur prononce le mot « Spotify »
+    """
+    if not recherche.strip():
+        return ("Aucune chanson précisée. Pour mettre en pause ou passer à la suivante, "
+                "utiliser l'outil controle_musique.")
+    if "spotify" in plateforme.lower():
+        # Sans compte développeur Spotify, on peut ouvrir la recherche mais pas lancer la lecture
+        os.startfile(f"spotify:search:{quote(recherche)}")
+        return f"Recherche « {recherche} » ouverte dans Spotify : il reste à cliquer sur le titre."
+    url = find_youtube_video(recherche)
+    if url:
+        webbrowser.open(url)  # une vidéo YouTube se lance toute seule à l'ouverture
+        return f"Lecture de « {recherche} » sur YouTube : {url}"
+    # Dernier recours : la page de résultats YouTube (il faudra cliquer sur une vidéo)
+    webbrowser.open(f"https://www.youtube.com/results?search_query={quote_plus(recherche)}")
+    return f"Résultats YouTube pour « {recherche} » ouverts : il reste à choisir la vidéo."
+
+
+def find_youtube_video(recherche):
+    """Adresse de la 1re vidéo YouTube trouvée, ou None. Le service de recherche est capricieux :
+    on essaie la recherche de vidéos, puis une recherche web classique filtrée sur YouTube."""
+    attempts = [lambda d: d.videos(recherche, max_results=8),
+                lambda d: d.text(f"{recherche} youtube", max_results=10)]
+    for search in attempts:
+        try:
+            with DDGS() as ddgs:
+                for result in search(ddgs):
+                    link = result.get("content") or result.get("href") or ""
+                    if "youtube.com/watch" in link:
+                        return link
+        except Exception:
+            continue  # « aucun résultat » ou service indisponible : on passe à l'essai suivant
+    return None
 
 
 @tool("🌍 Ouverture du navigateur...")

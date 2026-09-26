@@ -16,6 +16,7 @@ mises à jour par une file (self.ui), que la fenêtre vide toutes les 30 ms.
 import queue
 import threading
 import time
+import winsound
 from datetime import datetime
 import customtkinter as ctk
 import jarvis_hud as hud
@@ -24,6 +25,7 @@ from jarvis_voice import Speaker, SentenceStreamer
 from jarvis_tools import TOOLS
 from jarvis_wake import WakeWordListener
 from jarvis_gestures import GestureWatcher, GESTURE_ACTIONS, model_ready
+from jarvis_reminders import reminders
 
 ctk.set_appearance_mode("dark")
 
@@ -47,7 +49,8 @@ class JarvisApp(ctk.CTk):
         # Réveil vocal : en pause pendant que Jarvis réfléchit ou parle
         self.wake = WakeWordListener(on_wake=self.on_wake, on_command=self.on_voice_command,
                                      on_error=lambda msg: self.ui(self.on_wake_error, msg),
-                                     is_paused=lambda: self.busy or self.speaker.is_speaking())
+                                     is_paused=lambda: self.busy or self.speaker.is_speaking(),
+                                     on_idle=self.on_followup_idle)
         # Gestes : désactivés au démarrage (la webcam ne s'allume que via le bouton GESTES)
         self.gestures = GestureWatcher(on_gesture=lambda name: self.ui(self.on_gesture, name),
                                        on_error=lambda msg: self.ui(self.on_gesture_error, msg))
@@ -59,6 +62,9 @@ class JarvisApp(ctk.CTk):
         self.poll_ui_queue()
         self.tick_clock()
         self.wake.start()
+        # Rappels : annoncés à l'écran et à voix haute (thread de vérification -> file self.ui)
+        reminders.on_due = lambda message, late: self.ui(self.announce_reminder, message, late)
+        reminders.start()
         self.after(1700, self.greet)  # après la séquence d'allumage du réacteur
 
     # --- Construction de la fenêtre ---
@@ -244,6 +250,19 @@ class JarvisApp(ctk.CTk):
         self.voice_btn.configure(state=state)
         self.set_status(status or self.idle_status())
 
+    def announce_reminder(self, message, late_minutes):
+        """Un rappel arrive : bip, message, voix, et fenêtre ramenée au premier plan."""
+        text = f"Rappel : {message}"
+        if late_minutes:  # arrivé pendant que Jarvis était fermé
+            text = f"Rappel manqué (il y a {late_minutes} min) : {message}"
+        threading.Thread(target=lambda: [winsound.Beep(988, 150) for _ in range(3)], daemon=True).start()
+        self.add_message("Jarvis", "⏰ " + text)
+        self.speaker.say(text)
+        self.deiconify()  # ré-ouvre la fenêtre si elle était réduite
+        self.lift()
+        self.attributes("-topmost", True)
+        self.after(1000, lambda: self.attributes("-topmost", False))
+
     def show_error(self, message):
         self.error_until = time.monotonic() + 3  # réacteur rouge 3 secondes
         self.add_message("Jarvis", message, "error")
@@ -330,10 +349,15 @@ class JarvisApp(ctk.CTk):
         threading.Thread(target=self.voice_process, daemon=True).start()
 
     # Appelés depuis le thread du réveil vocal
-    def on_wake(self):
+    def on_wake(self, followup=False):
         self.busy = True  # immédiat : empêche un 2e déclenchement avant la mise à jour de l'écran
         self.listening = True
-        self.ui(self.set_busy, True, "🎤 Je vous écoute...")
+        self.ui(self.set_busy, True, "🎤 Je vous écoute encore..." if followup else "🎤 Je vous écoute...")
+
+    def on_followup_idle(self):
+        """Mode conversation : personne n'a enchaîné, Jarvis se rendort."""
+        self.listening = False
+        self.ui(self.set_busy, False)
 
     def on_voice_command(self, text, error):
         self.listening = False
@@ -342,7 +366,7 @@ class JarvisApp(ctk.CTk):
             return
         self.ui(self.add_message, "l'utilisateur", text)
         self.ui(self.set_status, "Jarvis réfléchit...")
-        threading.Thread(target=self.process, args=(text,), daemon=True).start()
+        threading.Thread(target=self.process, args=(text, True), daemon=True).start()
 
     def voice_process(self):
         text, error = listen_voice()
@@ -352,10 +376,11 @@ class JarvisApp(ctk.CTk):
             return
         self.ui(self.add_message, "l'utilisateur", text)
         self.ui(self.set_status, "Jarvis réfléchit...")
-        self.process(text)
+        self.process(text, True)
 
-    def process(self, user_input):
-        """Tourne dans un thread : interroge Jarvis, affiche et prononce la réponse au fil de l'eau."""
+    def process(self, user_input, from_voice=False):
+        """Tourne dans un thread : interroge Jarvis, affiche et prononce la réponse au fil de l'eau.
+        from_voice : la question a été posée à la voix -> mode conversation après la réponse."""
         try:
             self.ui(self.write, "JARVIS > ", "jarvis")
             voice = SentenceStreamer(self.speaker)  # parle phrase par phrase, pendant l'écriture
@@ -370,6 +395,10 @@ class JarvisApp(ctk.CTk):
             finally:
                 self.ui(self.write, "\n\n")
             voice.flush()  # dernière phrase
+            if from_voice:
+                # Mode conversation : dès que Jarvis aura fini de parler, il écoute la suite
+                # quelques secondes sans « Hey Jarvis » (le réveil vocal attend la fin de la voix)
+                self.wake.listen_again()
         except ConnectionError:
             self.ui(self.show_error, "Ollama ne répond pas. Lancez-le avec `ollama serve`.")
         except Exception as e:

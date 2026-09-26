@@ -32,7 +32,7 @@ _mci = ctypes.windll.winmm.mciSendStringW  # lecteur audio intégré à Windows 
 def clean_for_speech(text):
     """Retire ce qui ne se prononce pas : symboles de mise en forme, adresses web."""
     text = re.sub(r"https?://\S+", "", text)
-    text = re.sub(r"[*#`_>|]", "", text)
+    text = re.sub(r"[*#`_>|\[\]]", "", text)
     return re.sub(r"\s+", " ", text).strip()
 
 
