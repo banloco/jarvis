@@ -14,10 +14,14 @@ Pour ajouter un outil :
   (c'est ce que lit le modèle pour savoir QUAND l'utiliser : soigner la 1re phrase) ;
 - la décorer avec @tool("texte affiché dans la barre de statut pendant l'exécution").
 """
+import ast
 import csv
 import ctypes
 import difflib
 import functools
+import json
+import math
+import operator
 import os
 import re
 import shutil
@@ -28,11 +32,18 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from urllib.parse import quote, quote_plus
 from urllib.request import Request, urlopen
+import psutil
 from ddgs import DDGS
 from jarvis_core import add_fact, now_text
 from jarvis_reminders import reminders
 
-DOCUMENTS_DIR = Path.home() / "Documents"  # seul dossier que Jarvis peut lire / modifier
+# Seuls dossiers que Jarvis peut lire / modifier : (noms acceptés, chemin, nom affiché)
+FOLDERS = [
+    ({"documents", "document", "mes documents"}, Path.home() / "Documents", "Documents"),
+    ({"telechargements", "telechargement", "downloads"}, Path.home() / "Downloads", "Téléchargements"),
+    ({"bureau", "desktop"}, Path.home() / "Desktop", "Bureau"),
+]
+MAX_FILE_READ = 4000  # caractères lus au maximum dans un fichier (au-delà : tronqué)
 TOOLS = []  # rempli automatiquement par @tool, puis passé à ask_model par les interfaces
 
 
@@ -74,20 +85,37 @@ def memoriser(fait: str) -> str:
     return f"Fait mémorisé : {fait}"
 
 
+FORECAST_DAYS = {"demain": 1, "apres-demain": 2, "après-demain": 2}
+
+
 @tool("🌦️ Météo...")
-def meteo(ville: str) -> str:
-    """Donne la météo actuelle d'une ville.
+def meteo(ville: str, jour: str = "aujourd'hui") -> str:
+    """Donne la météo d'une ville : le temps actuel, ou la prévision de demain / après-demain.
 
     Args:
-        ville: Le nom de la ville
+        ville: Le nom de la ville (vide = la ville de l'utilisateur, trouvée automatiquement)
+        jour: « aujourd'hui » (temps actuel), « demain » ou « après-demain »
     """
-    # Service gratuit wttr.in, sans clé d'API. Les %x sont ses codes de format :
-    # %l lieu, %C ciel, %t température, %f ressenti, %w vent, %h humidité
-    fmt = quote("%l : %C, %t (ressenti %f), vent %w, humidité %h", safe="%")
-    url = f"https://wttr.in/{quote(ville)}?format={fmt}&lang=fr"
+    # Service gratuit wttr.in, sans clé d'API (sans ville : localisation d'après la connexion)
+    day = FORECAST_DAYS.get(jour.lower().strip().replace(" ", "-"))
     try:
-        with urlopen(Request(url, headers={"User-Agent": "curl"}), timeout=8) as resp:
-            return resp.read().decode("utf-8").strip()
+        if day is None:
+            # Temps actuel. Les %x sont les codes de format de wttr.in :
+            # %l lieu, %C ciel, %t température, %f ressenti, %w vent, %h humidité
+            fmt = quote("%l : %C, %t (ressenti %f), vent %w, humidité %h", safe="%")
+            with urlopen(Request(f"https://wttr.in/{quote(ville)}?format={fmt}&lang=fr",
+                                 headers={"User-Agent": "curl"}), timeout=8) as resp:
+                return resp.read().decode("utf-8").strip()
+        # Prévision : données détaillées (JSON), 8 relevés par jour (toutes les 3 h)
+        with urlopen(Request(f"https://wttr.in/{quote(ville)}?format=j1&lang=fr",
+                             headers={"User-Agent": "curl"}), timeout=8) as resp:
+            data = json.loads(resp.read())
+        forecast = data["weather"][day]
+        place = ville or data["nearest_area"][0]["areaName"][0]["value"]
+        sky = lambda i: forecast["hourly"][i]["lang_fr"][0]["value"].strip().lower()
+        rain = max(int(h["chanceofrain"]) for h in forecast["hourly"][2:7])  # de 6 h à 18 h
+        return (f"{jour.capitalize()} à {place} : de {forecast['mintempC']} à {forecast['maxtempC']} °C, "
+                f"matin {sky(3)}, après-midi {sky(5)}, risque de pluie {rain} %.")
     except Exception as e:
         return f"Météo indisponible : {e}"
 
@@ -117,6 +145,76 @@ def briefing() -> str:
     """Fait le point du jour pour l'utilisateur : date, heure, météo locale et rappels du jour.
     À utiliser pour « fais-moi le point », « le briefing », « quoi de prévu aujourd'hui »."""
     return build_briefing()
+
+
+@tool("💻 État du PC...")
+def etat_pc() -> str:
+    """Donne l'état du PC : batterie, utilisation du processeur, mémoire vive, espace disque.
+    À utiliser pour « comment va le PC ? », « il me reste combien de batterie ? », « le disque est plein ? »."""
+    cpu = psutil.cpu_percent(interval=0.5)  # mesuré sur une demi-seconde
+    ram = psutil.virtual_memory()
+    disk = psutil.disk_usage("C:\\")
+    parts = [f"processeur utilisé à {cpu:.0f} %",
+             f"mémoire vive utilisée à {ram.percent:.0f} % ({ram.available / 1e9:.1f} Go libres)",
+             f"disque C : {disk.free / 1e9:.0f} Go libres sur {disk.total / 1e9:.0f}"]
+    battery = psutil.sensors_battery()  # None sur un PC fixe
+    if battery:
+        if battery.power_plugged:
+            status = "en charge"
+        elif battery.secsleft > 0:  # négatif quand Windows ne sait pas estimer
+            status = f"environ {duree_texte(battery.secsleft)} d'autonomie"
+        else:
+            status = "sur batterie"
+        parts.insert(0, f"batterie à {battery.percent:.0f} % ({status})")
+    return "État du PC : " + " ; ".join(parts) + "."
+
+
+# Calcul sûr : on analyse l'expression au lieu de l'exécuter (eval exécuterait n'importe quel code)
+OPERATIONS = {ast.Add: operator.add, ast.Sub: operator.sub, ast.Mult: operator.mul,
+              ast.Div: operator.truediv, ast.Pow: operator.pow, ast.Mod: operator.mod,
+              ast.FloorDiv: operator.floordiv, ast.USub: operator.neg, ast.UAdd: operator.pos}
+FUNCTIONS = {"sqrt": math.sqrt, "racine": math.sqrt, "abs": abs, "round": round, "arrondi": round,
+             "sin": math.sin, "cos": math.cos, "tan": math.tan, "log": math.log10, "ln": math.log}
+CONSTANTS = {"pi": math.pi, "e": math.e}
+
+
+def _evaluate(node):
+    """Calcule un nœud de l'expression ; refuse tout ce qui n'est pas du calcul."""
+    if isinstance(node, ast.Constant) and isinstance(node.value, (int, float)):
+        return node.value
+    if isinstance(node, ast.Name) and node.id in CONSTANTS:
+        return CONSTANTS[node.id]
+    if isinstance(node, ast.BinOp) and type(node.op) in OPERATIONS:
+        left, right = _evaluate(node.left), _evaluate(node.right)
+        if isinstance(node.op, ast.Pow) and abs(right) > 1000:
+            raise ValueError("puissance trop grande")
+        return OPERATIONS[type(node.op)](left, right)
+    if isinstance(node, ast.UnaryOp) and type(node.op) in OPERATIONS:
+        return OPERATIONS[type(node.op)](_evaluate(node.operand))
+    if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in FUNCTIONS:
+        return FUNCTIONS[node.func.id](*[_evaluate(a) for a in node.args])
+    raise ValueError("expression non autorisée")
+
+
+@tool("🧮 Calcul...")
+def calculer(expression: str) -> str:
+    """Calcule exactement une expression mathématique. À utiliser pour TOUT calcul
+    (le calcul de tête est peu fiable). Pour « 15 % de 80 », écrire 0.15 * 80.
+
+    Args:
+        expression: L'expression, par exemple « (12.5 + 3) * 4 », « 2 ** 10 » ou « sqrt(144) »
+    """
+    text = expression.replace("×", "*").replace("÷", "/").replace("^", "**")
+    text = re.sub(r"(\d),(\d)", r"\1.\2", text)  # virgule décimale française : 3,5 -> 3.5
+    try:
+        result = _evaluate(ast.parse(text, mode="eval").body)
+    except ZeroDivisionError:
+        return "Division par zéro impossible."
+    except Exception as e:
+        return f"Calcul impossible ({e}) : {expression}"
+    if isinstance(result, float):
+        result = int(result) if result.is_integer() else round(result, 6)
+    return f"{expression} = {result}"
 
 
 @tool("🕒 Heure...")
@@ -156,10 +254,14 @@ def creer_rappel(message: str, minutes: float = 0, heure: str = "") -> str:
         heure: Heure précise au format HH:MM, par exemple « 18:30 » (vide si minutes est donné)
     """
     now = datetime.now()
+    heure = str(heure).strip() if heure not in (None, "", 0) else ""  # le modèle envoie parfois un nombre
     if heure:
         parsed = parse_heure(heure)
         if not parsed:
             return f"Heure « {heure} » incompréhensible : utiliser le format HH:MM."
+        # Le modèle coupe parfois « 18h30 » en heure=18 et minutes=30 : on recombine
+        if parsed[1] == 0 and heure.isdigit() and minutes and 0 < float(minutes) < 60:
+            parsed = (parsed[0], int(float(minutes)))
         due = now.replace(hour=parsed[0], minute=parsed[1], second=0, microsecond=0)
         if due <= now:
             due += timedelta(days=1)  # heure déjà passée aujourd'hui : c'est pour demain
@@ -197,44 +299,102 @@ def annuler_rappel(recherche: str) -> str:
     return "Annulé : " + ", ".join(f"« {i['message']} »" for i in removed)
 
 
-# --- Fichiers (limités au dossier Documents) ---
+# --- Fichiers (limités à trois dossiers : Documents, Téléchargements, Bureau) ---
 
-@tool("📁 Lecture du dossier Documents...")
-def lister_fichiers() -> str:
-    """Liste les fichiers du dossier Documents de l'utilisateur."""
-    files = sorted(DOCUMENTS_DIR.iterdir())
-    return "\n".join(f.name for f in files[:30]) or "Le dossier Documents est vide."
+def folder(dossier):
+    """Nom dit par l'utilisateur -> (chemin, nom affiché), ou (None, message d'erreur)."""
+    key = dossier.lower().strip().replace("é", "e").replace("è", "e")
+    for names, path, label in FOLDERS:
+        if key in names:
+            return path, label
+    return None, f"Dossier « {dossier} » non autorisé : seulement Documents, Téléchargements ou Bureau."
+
+
+def safe_file(nom, dossier):
+    """Chemin d'un fichier DANS le dossier autorisé (Path(nom).name empêche d'en sortir
+    avec « ../ »), ou (None, message d'erreur)."""
+    path, label = folder(dossier)
+    return (path / Path(nom).name, label) if path else (None, label)
+
+
+@tool("📁 Lecture du dossier...")
+def lister_fichiers(dossier: str = "documents") -> str:
+    """Liste les fichiers d'un dossier de l'utilisateur, les plus récents en premier.
+
+    Args:
+        dossier: « documents », « téléchargements » ou « bureau »
+    """
+    path, label = folder(dossier)
+    if not path:
+        return label
+    files = sorted((f for f in path.iterdir() if not f.name.startswith(".") and f.name != "desktop.ini"),
+                   key=lambda f: f.stat().st_mtime, reverse=True)
+    if not files:
+        return f"Le dossier {label} est vide."
+    return f"{label} (du plus récent au plus ancien) :\n" + "\n".join(
+        f"- {f.name}{'/' if f.is_dir() else ''}" for f in files[:25])
 
 
 @tool("📄 Lecture du fichier...")
-def lire_fichier(nom: str) -> str:
-    """Lit le contenu d'un fichier texte du dossier Documents.
+def lire_fichier(nom: str, dossier: str = "documents") -> str:
+    """Lit le contenu d'un fichier texte.
 
     Args:
         nom: Le nom du fichier, avec son extension
+        dossier: « documents », « téléchargements » ou « bureau »
     """
-    path = DOCUMENTS_DIR / Path(nom).name  # empêche de sortir de Documents
+    path, label = safe_file(nom, dossier)
+    if not path:
+        return label
     if not path.is_file():
-        return f"Fichier {path.name} introuvable dans Documents."
+        return f"Fichier {path.name} introuvable dans {label}."
     try:
-        return path.read_text(encoding="utf-8")[:2000]
+        text = path.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError):
         return f"Impossible de lire {path.name} (fichier non texte ?)."
+    if len(text) > MAX_FILE_READ:
+        return text[:MAX_FILE_READ] + f"\n[... fichier tronqué : {len(text)} caractères au total]"
+    return text
 
 
 @tool("📝 Création du fichier...")
-def creer_fichier(nom: str, contenu: str = "") -> str:
-    """Crée un nouveau fichier texte dans le dossier Documents.
+def creer_fichier(nom: str, contenu: str = "", dossier: str = "documents") -> str:
+    """Crée un NOUVEAU fichier texte (n'écrase jamais un fichier existant).
 
     Args:
         nom: Le nom du fichier, avec son extension
         contenu: Le texte à écrire dans le fichier (optionnel)
+        dossier: « documents » (par défaut), « téléchargements » ou « bureau »
     """
-    path = DOCUMENTS_DIR / Path(nom).name
+    path, label = safe_file(nom, dossier)
+    if not path:
+        return label
     if path.exists():
-        return f"{path.name} existe déjà, je ne l'écrase pas."
+        return f"{path.name} existe déjà dans {label}, je ne l'écrase pas (utiliser ajouter_au_fichier)."
     path.write_text(contenu, encoding="utf-8")
-    return f"Fichier {path.name} créé dans Documents."
+    return f"Fichier {path.name} créé dans {label}."
+
+
+@tool("✏️ Ajout au fichier...")
+def ajouter_au_fichier(nom: str, texte: str, dossier: str = "documents") -> str:
+    """Ajoute du texte à la FIN d'un fichier texte existant (liste de courses, notes...).
+    Le contenu existant n'est jamais effacé.
+
+    Args:
+        nom: Le nom du fichier, avec son extension
+        texte: Le texte à ajouter
+        dossier: « documents », « téléchargements » ou « bureau »
+    """
+    path, label = safe_file(nom, dossier)
+    if not path:
+        return label
+    if not path.is_file():
+        return f"Fichier {path.name} introuvable dans {label} (utiliser creer_fichier)."
+    # Si le fichier ne finit pas par un retour à la ligne, on en ajoute un avant le texte
+    ends_with_newline = path.stat().st_size == 0 or path.read_bytes()[-1:] == b"\n"
+    with open(path, "a", encoding="utf-8") as f:  # "a" = ajout à la fin, jamais d'effacement
+        f.write(("" if ends_with_newline else "\n") + texte + "\n")
+    return f"Texte ajouté à la fin de {path.name}."
 
 
 # --- Contrôle du PC ---
@@ -501,24 +661,58 @@ def _press(vk, times=1):
         ctypes.windll.user32.keybd_event(vk, 0, 2, 0)  # KEYEVENTF_KEYUP
 
 
+def speakers():
+    """Commande du volume des haut-parleurs (pycaw), ou None si indisponible.
+    pycaw passe par COM (Windows), qui doit être initialisé dans CHAQUE thread qui l'utilise :
+    les outils tournent dans le thread de réponse, pas dans celui de la fenêtre."""
+    try:
+        import comtypes
+        from pycaw.pycaw import AudioUtilities
+        comtypes.CoInitialize()
+        return AudioUtilities.GetSpeakers().EndpointVolume
+    except Exception:
+        return None
+
+
 @tool("🔊 Réglage du volume...")
 def regler_volume(niveau: int) -> str:
-    """Règle le volume du PC.
+    """Règle le volume du PC à une valeur précise.
 
     Args:
         niveau: Le volume voulu, de 0 (muet) à 100
     """
     niveau = max(0, min(100, int(niveau)))
-    _press(VK_VOLUME_DOWN, 50)          # chaque appui = 2 %, on part de 0
-    _press(VK_VOLUME_UP, round(niveau / 2))
+    control = speakers()
+    if control:
+        control.SetMasterVolumeLevelScalar(niveau / 100, None)  # réglage direct et exact
+        if niveau > 0:
+            control.SetMute(0, None)  # régler le volume sous-entend qu'on veut entendre
+    else:  # secours : touches du clavier (chaque appui = 2 %, on descend à 0 puis on remonte)
+        _press(VK_VOLUME_DOWN, 50)
+        _press(VK_VOLUME_UP, round(niveau / 2))
     return f"Volume réglé à {niveau} %."
+
+
+@tool("🔊 Lecture du volume...")
+def lire_volume() -> str:
+    """Donne le volume actuel du PC (et s'il est coupé)."""
+    control = speakers()
+    if not control:
+        return "Impossible de lire le volume sur ce PC."
+    level = round(control.GetMasterVolumeLevelScalar() * 100)
+    return f"Volume à {level} %{', son coupé' if control.GetMute() else ''}."
 
 
 @tool("🔇 Coupure du son...")
 def couper_son() -> str:
     """Coupe ou rétablit le son du PC (bascule)."""
-    _press(VK_VOLUME_MUTE)
-    return "Son basculé (coupé / rétabli)."
+    control = speakers()
+    if not control:
+        _press(VK_VOLUME_MUTE)
+        return "Son basculé (coupé / rétabli)."
+    muted = not control.GetMute()
+    control.SetMute(int(muted), None)
+    return "Son coupé." if muted else "Son rétabli."
 
 
 @tool("🔒 Verrouillage...")

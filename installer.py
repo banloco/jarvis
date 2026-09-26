@@ -1,6 +1,7 @@
 """Installe les raccourcis de Jarvis.
 
     python installer.py             -> raccourci sur le Bureau + lancement au démarrage de Windows
+                                       + reconnaissance vocale hors ligne (Vosk, ~41 Mo)
     python installer.py --retirer   -> supprime ces deux raccourcis
 
 Le raccourci du Bureau ouvre la fenêtre de Jarvis. Celui du démarrage de Windows lance
@@ -12,6 +13,7 @@ import sys
 from pathlib import Path
 import win32com.client  # fourni par pywin32 : permet de créer des raccourcis Windows (.lnk)
 import jarvis_hud as hud
+from jarvis_core import download_offline_speech_model
 
 BASE = Path(__file__).resolve().parent
 PYTHONW = Path(sys.executable).with_name("pythonw.exe")
@@ -41,6 +43,9 @@ def install():
         create_shortcut(path, args)
         print(f"Créé : {path}")
     print("Jarvis démarrera désormais avec Windows (caché, icône près de l'horloge).")
+    print("Téléchargement de la reconnaissance vocale hors ligne (~41 Mo, une seule fois)...")
+    download_offline_speech_model()
+    print("Reconnaissance vocale hors ligne prête.")
 
 
 def uninstall():

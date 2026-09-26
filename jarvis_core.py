@@ -45,6 +45,10 @@ SILENCE_END = 1.0     # secondes de silence qui marquent la fin de la phrase
 NO_SPEECH = 5.0       # abandon si personne ne parle pendant ce temps
 MAX_COMMAND = 15.0    # durée maximale d'une demande
 MIN_SPEECH_RMS = 300  # volume minimal considéré comme de la parole (monte-le si le micro capte trop de bruit)
+# Reconnaissance vocale hors ligne (secours quand Google est injoignable) : petit modèle français
+VOSK_MODEL = "vosk-model-small-fr-0.22"
+VOSK_DIR = BASE_DIR / "models" / VOSK_MODEL
+VOSK_URL = f"https://alphacephei.com/vosk/models/{VOSK_MODEL}.zip"
 
 # Instructions permanentes données au modèle (le « prompt système »)
 JARVIS_PERSONA = """Tu es Jarvis, l'assistant personnel de l'utilisateur, inspiré de l'IA de Tony Stark.
@@ -250,8 +254,8 @@ def record_until_silence(frames, noise_floor=None, no_speech=NO_SPEECH):
 
 
 def transcribe(audio):
-    """Transforme l'audio en texte via Google (connexion Internet nécessaire).
-    Retourne (texte, None) si ça marche, (None, message d'erreur) sinon."""
+    """Transforme l'audio en texte : Google (plus précis, Internet nécessaire), et Vosk
+    sur le PC si Google est injoignable. Retourne (texte, None) ou (None, message d'erreur)."""
     if audio is None:
         return None, "Rien entendu. Réessayez."
     try:
@@ -260,8 +264,43 @@ def transcribe(audio):
         return sr.Recognizer().recognize_google(data, language="fr-FR"), None
     except sr.UnknownValueError:
         return None, "Je n'ai pas compris. Réessayez."
-    except sr.RequestError:
-        return None, "Reconnaissance vocale indisponible (connexion ?)."
+    except Exception:  # pas d'Internet, Google indisponible... -> reconnaissance hors ligne
+        return transcribe_offline(audio)
+
+
+_vosk = None  # modèle hors ligne, chargé au premier besoin (~2 s)
+
+
+def download_offline_speech_model():
+    """Télécharge le modèle Vosk français (~41 Mo) s'il n'est pas déjà là. À faire avec Internet."""
+    import urllib.request
+    import zipfile
+    if VOSK_DIR.exists():
+        return
+    VOSK_DIR.parent.mkdir(parents=True, exist_ok=True)
+    archive = VOSK_DIR.parent / f"{VOSK_MODEL}.zip"
+    urllib.request.urlretrieve(VOSK_URL, archive)
+    with zipfile.ZipFile(archive) as z:
+        z.extractall(VOSK_DIR.parent)
+    archive.unlink()  # l'archive ne sert plus une fois décompressée
+
+
+def transcribe_offline(audio):
+    """Reconnaissance vocale sur le PC, sans Internet (Vosk). Moins précise que Google."""
+    global _vosk
+    if not VOSK_DIR.exists():
+        return None, "Pas d'Internet, et la reconnaissance hors ligne n'est pas installée (python installer.py)."
+    try:
+        from vosk import KaldiRecognizer, Model, SetLogLevel
+        if _vosk is None:
+            SetLogLevel(-1)  # Vosk est très bavard par défaut
+            _vosk = Model(str(VOSK_DIR))
+        recognizer = KaldiRecognizer(_vosk, SAMPLE_RATE)
+        recognizer.AcceptWaveform(audio.tobytes())
+        text = json.loads(recognizer.FinalResult()).get("text", "").strip()
+    except Exception as e:
+        return None, f"Reconnaissance vocale indisponible : {e}"
+    return (text, None) if text else (None, "Je n'ai pas compris. Réessayez.")
 
 
 def listen_voice():
@@ -366,42 +405,47 @@ def ask_model(history, user_input, tools=(), on_token=None, on_status=None):
     reply = ""
     tool_steps = []  # demandes d'outils + résultats de ce tour, gardés dans l'historique
 
-    for _ in range(MAX_TOOL_ROUNDS):
-        content, calls = "", []
-        # stream=True : la réponse arrive morceau par morceau au lieu d'un bloc à la fin
-        options = {} if THINK is None else {"think": THINK}
-        try:
-            for chunk in client.chat(model=MODEL, messages=messages, tools=list(tools),
-                                     stream=True, keep_alive=KEEP_ALIVE, **options):
-                piece = chunk.message.content or ""
-                content += piece
-                if piece and on_token:
-                    on_token(piece)
-                calls.extend(chunk.message.tool_calls or [])
-        except httpx.TimeoutException:
-            raise TimeoutError(f"Ollama ne répond plus depuis {OLLAMA_TIMEOUT} s. "
-                               "Réessaie, ou relance Ollama.") from None
-        reply += content
+    # Le petit modèle renvoie parfois une réponse totalement vide (ni texte, ni outil) :
+    # dans ce cas seulement, on lui repose la question une 2e fois (il a une part de hasard).
+    for attempt in range(2):
+        for _ in range(MAX_TOOL_ROUNDS):
+            content, calls = "", []
+            # stream=True : la réponse arrive morceau par morceau au lieu d'un bloc à la fin
+            options = {} if THINK is None else {"think": THINK}
+            try:
+                for chunk in client.chat(model=MODEL, messages=messages, tools=list(tools),
+                                         stream=True, keep_alive=KEEP_ALIVE, **options):
+                    piece = chunk.message.content or ""
+                    content += piece
+                    if piece and on_token:
+                        on_token(piece)
+                    calls.extend(chunk.message.tool_calls or [])
+            except httpx.TimeoutException:
+                raise TimeoutError(f"Ollama ne répond plus depuis {OLLAMA_TIMEOUT} s. "
+                                   "Réessaie, ou relance Ollama.") from None
+            reply += content
 
-        if not calls:
-            break  # réponse texte finale : terminé
-        # On garde la trace de la demande d'outil et de son résultat : le modèle s'appuie
-        # dessus au tour suivant, et l'historique en garde l'exemple pour les prochaines fois
-        # (format dictionnaire, pour pouvoir l'enregistrer dans memory.json)
-        step = [{"role": "assistant", "content": content,
-                 "tool_calls": [{"function": {"name": c.function.name, "arguments": c.function.arguments or {}}}
-                                for c in calls]}]
-        for call in calls:
+            if not calls:
+                break  # réponse texte finale : terminé
+            # On garde la trace de la demande d'outil et de son résultat : le modèle s'appuie
+            # dessus au tour suivant, et l'historique en garde l'exemple pour les prochaines fois
+            # (format dictionnaire, pour pouvoir l'enregistrer dans memory.json)
+            step = [{"role": "assistant", "content": content,
+                     "tool_calls": [{"function": {"name": c.function.name, "arguments": c.function.arguments or {}}}
+                                    for c in calls]}]
+            for call in calls:
+                if on_status:
+                    on_status(getattr(by_name.get(call.function.name), "label", f"⚙️ {call.function.name}..."))
+                step.append({"role": "tool", "tool_name": call.function.name, "content": run_tool(by_name, call)})
+            messages += step  # le modèle voit le résultat complet pour cette réponse...
+            # ... mais l'historique n'en garde qu'un extrait : une recherche web complète alourdirait
+            # (et ralentirait) toutes les questions suivantes
+            tool_steps += [dict(m, content=m["content"][:MAX_TOOL_RESULT]) if m["role"] == "tool" else m
+                           for m in step]
             if on_status:
-                on_status(getattr(by_name.get(call.function.name), "label", f"⚙️ {call.function.name}..."))
-            step.append({"role": "tool", "tool_name": call.function.name, "content": run_tool(by_name, call)})
-        messages += step  # le modèle voit le résultat complet pour cette réponse...
-        # ... mais l'historique n'en garde qu'un extrait : une recherche web complète alourdirait
-        # (et ralentirait) toutes les questions suivantes
-        tool_steps += [dict(m, content=m["content"][:MAX_TOOL_RESULT]) if m["role"] == "tool" else m
-                       for m in step]
-        if on_status:
-            on_status("Jarvis réfléchit...")
+                on_status("Jarvis réfléchit...")
+        if reply.strip() or tool_steps:
+            break
 
     reply = reply.strip()
     if not reply:
