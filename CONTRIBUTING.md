@@ -25,6 +25,7 @@ First off, thanks for wanting to help. Here's how we keep things smooth.
 - **Never touch your real data while testing.** Point `core.BASE_DIR`, `core.MEMORY_FILE`,
   `core.FACTS_FILE`, `jarvis_ui.STATE_FILE` and `tools.reminders` at a temp folder:
   `ask_model` writes to both the history and long-term memory.
+- To test the window without the model, stub it out: `jarvis_ui.warm_up = lambda *a, **k: None`.
 - **Measure before you conclude**: response time, accuracy, frames per second. Put the
   numbers in your pull request, even if they're not great.
 - In the pull request, say what you actually tried for real (mic, webcam, window).
