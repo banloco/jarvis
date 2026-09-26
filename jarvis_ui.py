@@ -7,6 +7,7 @@ et les boutons. À droite : la conversation.
 Trois façons de parler à Jarvis : taper, cliquer sur 🎤, ou dire « Hey Jarvis »
 (réveil vocal, voir jarvis_wake.py ; bouton ÉCOUTE pour l'activer / le couper).
 Bouton GESTES : contrôle par gestes et mouvements de la main (voir jarvis_gestures.py).
+Bouton INTERFACE HOLO : écran holographique plein écran piloté à la main (voir jarvis_holo.py).
 
 Point important : le modèle met plusieurs secondes à répondre. Pour que la fenêtre
 ne gèle pas, chaque question est traitée dans un thread séparé. Mais Tkinter interdit
@@ -28,6 +29,7 @@ from jarvis_voice import Speaker, SentenceStreamer
 from jarvis_tools import TOOLS, build_briefing
 from jarvis_wake import WakeWordListener
 from jarvis_gestures import GestureWatcher, GESTURE_ACTIONS, model_ready
+from jarvis_holo import HoloHUD
 from jarvis_reminders import reminders
 
 ctk.set_appearance_mode("dark")
@@ -54,6 +56,9 @@ class JarvisApp(ctk.CTk):
         self.busy = False                # True pendant qu'une question est en cours
         self.listening = False           # True pendant l'écoute du micro (réacteur plus vif)
         self.error_until = 0.0           # le réacteur reste rouge jusqu'à cet instant
+        self.status_text = ""            # texte de statut, lu aussi par l'interface holo
+        self.holo = None                 # interface holographique, quand elle est ouverte
+        self.gestures_before_holo = False  # surveillance des gestes à rallumer en fermant le HUD
         self.ui_queue = queue.Queue()    # mises à jour de l'écran envoyées par les threads
         # Réveil vocal : en pause pendant que Jarvis réfléchit ou parle
         self.wake = WakeWordListener(on_wake=self.on_wake, on_command=self.on_voice_command,
@@ -89,6 +94,7 @@ class JarvisApp(ctk.CTk):
         ils passent donc par self.ui, comme tout ce qui touche à la fenêtre."""
         menu = pystray.Menu(
             pystray.MenuItem("Afficher Jarvis", lambda: self.ui(self.show_window), default=True),
+            pystray.MenuItem("Interface holographique", lambda: self.ui(self.open_holo)),
             pystray.MenuItem("Quitter", lambda: self.ui(self.quit_app)))
         self.tray = pystray.Icon("jarvis", hud.make_icon(64), "Jarvis", menu)
         self.tray.run_detached()
@@ -108,6 +114,8 @@ class JarvisApp(ctk.CTk):
     def quit_app(self):
         self.wake.enabled = False
         self.gestures.enabled = False  # éteint la webcam si elle était allumée
+        if self.holo:
+            self.holo.close()
         self.speaker.stop()
         self.tray.stop()
         # Ne PAS annuler toutes les tâches programmées (self.after) avant : CustomTkinter
@@ -168,6 +176,7 @@ class JarvisApp(ctk.CTk):
         self.gesture_btn = self.hud_button(buttons, "GESTES", self.toggle_gestures)
         for i, b in enumerate([self.mute_btn, self.wake_btn, self.gesture_btn]):
             b.grid(row=0, column=i, padx=3, sticky="ew")
+        self.hud_button(side, "INTERFACE HOLO", self.open_holo).pack(fill="x", pady=(8, 0))
         self.hud_button(side, "NOUVELLE CONVERSATION", self.clear_history).pack(fill="x", pady=(8, 0))
         self.update_indicators()
 
@@ -295,6 +304,7 @@ class JarvisApp(ctk.CTk):
         self.write(f"{message}\n\n")
 
     def set_status(self, text):
+        self.status_text = text
         self.status.configure(text=text.upper())
 
     def idle_status(self):
@@ -374,6 +384,39 @@ class JarvisApp(ctk.CTk):
         self.gestures.enabled = False
         self.update_indicators()
         self.set_status(message)
+
+    # --- Interface holographique ---
+
+    def open_holo(self):
+        """Ouvre l'écran holographique plein écran, piloté à la main (voir jarvis_holo.py)."""
+        if self.holo and self.holo.running:
+            return
+        # Une seule application à la fois peut utiliser la webcam : on met les gestes en pause
+        self.gestures_before_holo = self.gestures.enabled
+        self.gestures.enabled = False
+        self.update_indicators()
+        # Ces fonctions sont appelées depuis le thread du HUD : elles ne font que lire
+        # des valeurs, ou passent par self.ui pour agir sur la fenêtre
+        self.holo = HoloHUD(on_talk=lambda: self.ui(self.send_voice),
+                            get_state=self.reactor_state,
+                            get_status=lambda: self.status_text,
+                            get_reply=self.last_reply,
+                            on_close=lambda: self.ui(self.on_holo_closed),
+                            on_error=lambda msg: self.ui(self.show_error, msg))
+        self.holo.start(wait_for=lambda: not self.gestures.running)  # attend que la webcam soit libre
+
+    def on_holo_closed(self):
+        if self.gestures_before_holo:  # la surveillance des gestes reprend
+            self.gestures.enabled = True
+            self.gestures.start()
+        self.update_indicators()
+
+    def last_reply(self):
+        """Dernière réponse de Jarvis (pour l'interface holo)."""
+        for m in reversed(list(self.history)):  # copie : l'historique change pendant une réponse
+            if m["role"] == "assistant" and m["content"].strip():
+                return m["content"]
+        return ""
 
     def clear_history(self):
         """Vide la conversation récente. La mémoire à long terme et les faits restent intacts."""
