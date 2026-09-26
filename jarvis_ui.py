@@ -14,20 +14,24 @@ de modifier la fenêtre depuis un autre thread : ces threads passent donc leurs
 mises à jour par une file (self.ui), que la fenêtre vide toutes les 30 ms.
 """
 import queue
+import sys
 import threading
 import time
 import winsound
-from datetime import datetime
+from datetime import date, datetime
 import customtkinter as ctk
+import pystray
 import jarvis_hud as hud
-from jarvis_core import MODEL, load_history, save_history, listen_voice, ask_model, warm_up
+from jarvis_core import (BASE_DIR, MODEL, load_history, save_history, listen_voice, ask_model,
+                         warm_up, load_json, save_json)
 from jarvis_voice import Speaker, SentenceStreamer
-from jarvis_tools import TOOLS
+from jarvis_tools import TOOLS, build_briefing
 from jarvis_wake import WakeWordListener
 from jarvis_gestures import GestureWatcher, GESTURE_ACTIONS, model_ready
 from jarvis_reminders import reminders
 
 ctk.set_appearance_mode("dark")
+STATE_FILE = BASE_DIR / "jarvis_state.json"  # petit état entre deux lancements (date du dernier briefing)
 
 
 def hud_font(size, bold=False):
@@ -35,8 +39,13 @@ def hud_font(size, bold=False):
 
 
 class JarvisApp(ctk.CTk):
-    def __init__(self):
+    def __init__(self, hidden=False):
+        """hidden=True : démarre sans fenêtre, seulement l'icône près de l'horloge
+        (utilisé au démarrage de Windows)."""
         super().__init__(fg_color=hud.BG)
+        from PIL import ImageTk
+        self.icon_image = ImageTk.PhotoImage(hud.make_icon(64))  # gardée en mémoire (sinon effacée)
+        self.iconphoto(True, self.icon_image)                   # icône de la fenêtre et de la barre des tâches
         self.title("J.A.R.V.I.S")
         self.geometry("1100x680")
         self.minsize(900, 560)
@@ -65,7 +74,45 @@ class JarvisApp(ctk.CTk):
         # Rappels : annoncés à l'écran et à voix haute (thread de vérification -> file self.ui)
         reminders.on_due = lambda message, late: self.ui(self.announce_reminder, message, late)
         reminders.start()
+        # Arrière-plan : la croix cache la fenêtre, Jarvis reste actif près de l'horloge
+        self.protocol("WM_DELETE_WINDOW", self.hide_to_tray)
+        self.tray_hint_shown = False
+        self.setup_tray()
+        if hidden:
+            self.withdraw()
         self.after(1700, self.greet)  # après la séquence d'allumage du réacteur
+
+    # --- Arrière-plan (icône près de l'horloge) ---
+
+    def setup_tray(self):
+        """Icône dans la zone de notification. Ses menus s'exécutent dans un autre thread :
+        ils passent donc par self.ui, comme tout ce qui touche à la fenêtre."""
+        menu = pystray.Menu(
+            pystray.MenuItem("Afficher Jarvis", lambda: self.ui(self.show_window), default=True),
+            pystray.MenuItem("Quitter", lambda: self.ui(self.quit_app)))
+        self.tray = pystray.Icon("jarvis", hud.make_icon(64), "Jarvis", menu)
+        self.tray.run_detached()
+
+    def hide_to_tray(self):
+        self.withdraw()
+        if not self.tray_hint_shown:  # explique une fois où est passé Jarvis
+            self.tray_hint_shown = True
+            self.tray.notify("Jarvis reste actif en arrière-plan. Clic droit sur son icône > Quitter "
+                             "pour l'arrêter.", "Jarvis")
+
+    def show_window(self):
+        self.deiconify()
+        self.lift()
+        self.focus_force()
+
+    def quit_app(self):
+        self.wake.enabled = False
+        self.gestures.enabled = False  # éteint la webcam si elle était allumée
+        self.speaker.stop()
+        self.tray.stop()
+        # Ne PAS annuler toutes les tâches programmées (self.after) avant : CustomTkinter
+        # en a besoin pour se détruire, sinon la fermeture reste bloquée
+        self.destroy()
 
     # --- Construction de la fenêtre ---
 
@@ -197,10 +244,21 @@ class JarvisApp(ctk.CTk):
         self.write("── nouvelle session ──\n\n", "jarvis")
 
     def greet(self):
+        """Accueil : briefing complet au premier lancement de la journée, simple salut ensuite."""
         self.show_previous_conversation()
         hour = datetime.now().hour
         hello = "Bonjour" if 5 <= hour < 18 else "Bonsoir"
-        message = f"{hello} l'utilisateur. Tous les systèmes sont opérationnels."
+        state = load_json(STATE_FILE, {})
+        if state.get("last_briefing") == date.today().isoformat():
+            self.say_and_show(f"{hello} l'utilisateur. Tous les systèmes sont opérationnels.")
+            return
+        state["last_briefing"] = date.today().isoformat()
+        save_json(STATE_FILE, state)
+        self.set_status("Préparation du briefing...")
+        # La météo passe par Internet : on prépare le briefing hors du thread de la fenêtre
+        threading.Thread(target=lambda: self.ui(self.say_and_show, build_briefing(hello)), daemon=True).start()
+
+    def say_and_show(self, message):
         self.add_message("Jarvis", message)
         self.speaker.say(message)
         self.set_status(self.idle_status())
@@ -408,5 +466,11 @@ class JarvisApp(ctk.CTk):
 
 
 if __name__ == "__main__":
-    app = JarvisApp()
+    # Lancé avec pythonw (raccourci, démarrage de Windows), il n'y a pas de console :
+    # les messages et erreurs sont alors écrits dans jarvis.log pour pouvoir diagnostiquer.
+    if sys.stdout is None:
+        log = open(BASE_DIR / "jarvis.log", "a", encoding="utf-8", buffering=1)
+        sys.stdout = sys.stderr = log
+        print(f"\n--- Démarrage de Jarvis, {datetime.now():%Y-%m-%d %H:%M} ---")
+    app = JarvisApp(hidden="--cache" in sys.argv)
     app.mainloop()

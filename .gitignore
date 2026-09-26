@@ -7,6 +7,9 @@ gestures_data*.npz
 gestures_model.joblib
 reminders.json
 wake_config.json
+jarvis_state.json
+jarvis.log
+jarvis.ico
 
 # Téléchargés automatiquement (modèle de main MediaPipe, données HaGRID)
 models/

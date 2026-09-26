@@ -92,6 +92,33 @@ def meteo(ville: str) -> str:
         return f"Météo indisponible : {e}"
 
 
+HOME_CITY = ""  # ville du briefing ; vide = trouvée automatiquement d'après la connexion Internet
+
+
+def build_briefing(hello="Bonjour"):
+    """Le point du jour, en quelques phrases : date, heure, météo locale, rappels du jour.
+    Construit sans le modèle : rapide, et aucun risque d'information inventée."""
+    now = datetime.now()
+    parts = [f"{hello} l'utilisateur. Nous sommes {now_text().replace(',', ', il est')}."]
+    weather = meteo(HOME_CITY)
+    if not weather.startswith("Météo indisponible"):
+        parts.append(f"Météo à {weather}.")
+    today = [i for i in reminders.pending() if datetime.fromisoformat(i["due"]).date() == now.date()]
+    if today:
+        items = ", ".join(f"à {datetime.fromisoformat(i['due']):%H:%M}, {i['message']}" for i in today)
+        parts.append(f"{'Un rappel' if len(today) == 1 else f'{len(today)} rappels'} aujourd'hui : {items}.")
+    else:
+        parts.append("Aucun rappel aujourd'hui.")
+    return " ".join(parts)
+
+
+@tool("📋 Briefing...")
+def briefing() -> str:
+    """Fait le point du jour pour l'utilisateur : date, heure, météo locale et rappels du jour.
+    À utiliser pour « fais-moi le point », « le briefing », « quoi de prévu aujourd'hui »."""
+    return build_briefing()
+
+
 @tool("🕒 Heure...")
 def heure_et_date() -> str:
     """Donne la date et l'heure actuelles."""

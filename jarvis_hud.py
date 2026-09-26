@@ -25,6 +25,25 @@ STATE_COLORS = {"boot": CYAN, "idle": CYAN, "listening": "#7ff3ff", "thinking": 
                 "speaking": "#5fe6ff", "error": ERROR}
 
 
+def make_icon(size=64):
+    """Icône de Jarvis (petit réacteur arc) en image PIL, pour la zone de notification
+    et les raccourcis. Dessinée en grand puis réduite, pour des bords lisses."""
+    from PIL import Image, ImageDraw
+    big = size * 4
+    img = Image.new("RGBA", (big, big), (0, 0, 0, 0))
+    d = ImageDraw.Draw(img)
+    c = big / 2
+    ring = lambda r, **kw: d.ellipse((c - r, c - r, c + r, c + r), **kw)
+    ring(big * 0.48, fill=BG)                                   # fond rond bleu nuit
+    ring(big * 0.44, outline=CYAN, width=int(big * 0.03))      # anneau extérieur
+    for k in range(10):                                         # bobines
+        d.arc((c - big * 0.33, c - big * 0.33, c + big * 0.33, c + big * 0.33),
+              start=k * 36 + 6, end=k * 36 + 30, fill=CYAN, width=int(big * 0.09))
+    ring(big * 0.2, fill=CYAN)                                  # cœur
+    ring(big * 0.12, fill=WHITE)
+    return img.resize((size, size), Image.LANCZOS)
+
+
 def blend(color_a, color_b, t):
     """Mélange deux couleurs « #rrggbb » : t = 0 -> a, t = 1 -> b."""
     a = [int(color_a[i:i + 2], 16) for i in (1, 3, 5)]
