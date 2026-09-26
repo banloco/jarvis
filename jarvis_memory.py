@@ -16,6 +16,7 @@ import threading
 import numpy as np
 import ollama
 from datetime import datetime
+from jarvis_config import USER_LABEL
 
 # Modèle multilingue : il sépare bien les phrases françaises liées / sans rapport
 # (nomic-embed-text, testé, donnait des scores presque identiques partout en français).
@@ -83,7 +84,7 @@ class LongTermMemory:
     def add_exchange(self, user_input, reply):
         """Archive un échange. Le champ "user" sert à ne pas ressortir un échange
         qui est déjà dans la conversation en cours."""
-        self.add(f"l'utilisateur : {user_input}\nJarvis : {reply}", "conversation", user=user_input)
+        self.add(f"{USER_LABEL} : {user_input}\nJarvis : {reply}", "conversation", user=user_input)
 
     def search(self, query, k=5, skip=lambda item: False):
         """Retourne jusqu'à k souvenirs proches de la question, du plus au moins pertinent.
@@ -109,6 +110,6 @@ class LongTermMemory:
         # On reforme les paires question / réponse de l'historique
         for user, assistant in zip(history, history[1:]):
             if user["role"] == "user" and assistant["role"] == "assistant":
-                entries.append({"text": f"l'utilisateur : {user['content']}\nJarvis : {assistant['content']}",
+                entries.append({"text": f"{USER_LABEL} : {user['content']}\nJarvis : {assistant['content']}",
                                 "kind": "conversation", "date": "", "user": user["content"]})
         self.add_many(entries)

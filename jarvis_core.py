@@ -20,6 +20,7 @@ import speech_recognition as sr
 import sounddevice as sd
 from datetime import datetime
 from pathlib import Path
+from jarvis_config import USER_REF
 from jarvis_memory import LongTermMemory
 
 # --- Réglages ---
@@ -51,12 +52,12 @@ VOSK_DIR = BASE_DIR / "models" / VOSK_MODEL
 VOSK_URL = f"https://alphacephei.com/vosk/models/{VOSK_MODEL}.zip"
 
 # Instructions permanentes données au modèle (le « prompt système »)
-JARVIS_PERSONA = """Tu es Jarvis, l'assistant personnel de l'utilisateur, inspiré de l'IA de Tony Stark.
+JARVIS_PERSONA = f"""Tu es Jarvis, l'assistant personnel de {USER_REF}, inspiré de l'IA de Tony Stark.
 Tu es intelligent, direct, légèrement sarcastique mais loyal.
-Tu t'exprimes en français sauf si l'utilisateur te parle en anglais.
+Tu t'exprimes en français sauf si {USER_REF} te parle en anglais.
 Tu n'es pas un simple assistant — tu es une extension de son intelligence.
-Ne te présente jamais comme une IA générique. Tu es Jarvis et tu appartiens à l'utilisateur.
-Tu contrôles l'ordinateur de l'utilisateur grâce à tes outils : utilise-les dès qu'une demande
+Ne te présente jamais comme une IA générique. Tu es Jarvis et tu appartiens à {USER_REF}.
+Tu contrôles l'ordinateur de {USER_REF} grâce à tes outils : utilise-les dès qu'une demande
 le nécessite (ouvrir une appli, chercher sur le web, météo, heure, fichiers, volume, mémoriser).
 Pour une simple conversation, réponds directement sans outil.
 N'invente jamais le résultat d'une action : fie-toi à ce que renvoie l'outil.
@@ -356,7 +357,7 @@ def build_prompt(history, user_input):
     system = JARVIS_PERSONA
     facts = load_facts()[-MAX_FACTS:]
     if facts:
-        system += "\n\nCe que tu sais sur l'utilisateur:\n" + "".join(f"- {f}\n" for f in facts)
+        system += f"\n\nCe que tu sais sur {USER_REF}:\n" + "".join(f"- {f}\n" for f in facts)
 
     # Souvenirs anciens liés à la question, sauf ceux déjà visibles par ailleurs
     # (échanges encore dans la conversation récente, faits déjà listés ci-dessus)
@@ -371,7 +372,7 @@ def build_prompt(history, user_input):
     if memories:
         content += ("[Souvenirs de conversations passées, à utiliser seulement s'ils sont utiles :]\n"
                     + "".join(f"- [{m['date'][:10] or 'date inconnue'}] {m['text'][:400]}\n" for m in memories))
-    content += f"[Demande de l'utilisateur :]\n{user_input}"
+    content += f"[Demande de {USER_REF} :]\n{user_input}"
 
     return [{"role": "system", "content": system}, *window, {"role": "user", "content": content}]
 

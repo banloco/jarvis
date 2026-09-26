@@ -5,6 +5,7 @@ Toute l'intelligence est dans jarvis_core.py ; ce fichier ne gère que le dialog
 """
 from rich.console import Console
 from rich.panel import Panel
+from jarvis_config import USER_LABEL
 from jarvis_core import load_history, listen_voice, ask_model, warm_up
 from jarvis_voice import Speaker
 from jarvis_tools import TOOLS
@@ -25,7 +26,7 @@ def listen():
     console.print("[cyan]Jarvis écoute...[/cyan]")
     text, error = listen_voice()
     if text:
-        console.print(f"[green]l'utilisateur > {text}[/green]")
+        console.print(f"[green]{USER_LABEL} > {text}[/green]")
     else:
         console.print(f"[dim]{error}[/dim]")
     return text

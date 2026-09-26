@@ -28,6 +28,7 @@ from jarvis_core import (BASE_DIR, MODEL, load_history, save_history, listen_voi
 from jarvis_voice import Speaker, SentenceStreamer
 from jarvis_tools import TOOLS, build_briefing
 from jarvis_wake import WakeWordListener
+from jarvis_config import USER_LABEL, greeting
 from jarvis_gestures import GestureWatcher, GESTURE_ACTIONS, model_ready
 from jarvis_holo import HoloHUD
 from jarvis_reminders import reminders
@@ -249,7 +250,7 @@ class JarvisApp(ctk.CTk):
             return
         self.write("── conversation précédente ──\n\n", "jarvis")
         for m in shown[-count:]:
-            self.add_message("l'utilisateur" if m["role"] == "user" else "Jarvis", m["content"])
+            self.add_message(USER_LABEL if m["role"] == "user" else "Jarvis", m["content"])
         self.write("── nouvelle session ──\n\n", "jarvis")
 
     def greet(self):
@@ -259,7 +260,7 @@ class JarvisApp(ctk.CTk):
         hello = "Bonjour" if 5 <= hour < 18 else "Bonsoir"
         state = load_json(STATE_FILE, {})
         if state.get("last_briefing") == date.today().isoformat():
-            self.say_and_show(f"{hello} l'utilisateur. Tous les systèmes sont opérationnels.")
+            self.say_and_show(f"{greeting(hello)} Tous les systèmes sont opérationnels.")
             return
         state["last_briefing"] = date.today().isoformat()
         save_json(STATE_FILE, state)
@@ -299,7 +300,7 @@ class JarvisApp(ctk.CTk):
 
     def add_message(self, sender, message, tag=None):
         """Affiche un message complet : « NOM > message »."""
-        tag = tag or sender.lower()
+        tag = tag or ("jarvis" if sender == "Jarvis" else "user")
         self.write(f"{sender.upper()} > ", tag)
         self.write(f"{message}\n\n")
 
@@ -437,7 +438,7 @@ class JarvisApp(ctk.CTk):
             return
         self.input_field.delete(0, "end")
         self.speaker.stop()  # on coupe Jarvis s'il parlait encore
-        self.add_message("l'utilisateur", text)
+        self.add_message(USER_LABEL, text)
         self.set_busy(True, "Jarvis réfléchit...")
         threading.Thread(target=self.process, args=(text,), daemon=True).start()
 
@@ -465,7 +466,7 @@ class JarvisApp(ctk.CTk):
         if not text:
             self.ui(self.set_busy, False, error)
             return
-        self.ui(self.add_message, "l'utilisateur", text)
+        self.ui(self.add_message, USER_LABEL, text)
         self.ui(self.set_status, "Jarvis réfléchit...")
         threading.Thread(target=self.process, args=(text, True), daemon=True).start()
 
@@ -475,7 +476,7 @@ class JarvisApp(ctk.CTk):
         if not text:
             self.ui(self.set_busy, False, error)
             return
-        self.ui(self.add_message, "l'utilisateur", text)
+        self.ui(self.add_message, USER_LABEL, text)
         self.ui(self.set_status, "Jarvis réfléchit...")
         self.process(text, True)
 

@@ -8,6 +8,7 @@ gestures_model.joblib
 reminders.json
 wake_config.json
 jarvis_state.json
+config.json
 jarvis.log
 jarvis.ico
 

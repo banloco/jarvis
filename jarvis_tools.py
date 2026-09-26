@@ -34,6 +34,7 @@ from urllib.parse import quote, quote_plus
 from urllib.request import Request, urlopen
 import psutil
 from ddgs import DDGS
+from jarvis_config import greeting
 from jarvis_core import add_fact, now_text
 from jarvis_reminders import reminders
 
@@ -127,7 +128,7 @@ def build_briefing(hello="Bonjour"):
     """Le point du jour, en quelques phrases : date, heure, météo locale, rappels du jour.
     Construit sans le modèle : rapide, et aucun risque d'information inventée."""
     now = datetime.now()
-    parts = [f"{hello} l'utilisateur. Nous sommes {now_text().replace(',', ', il est')}."]
+    parts = [f"{greeting(hello)} Nous sommes {now_text().replace(',', ', il est')}."]
     weather = meteo(HOME_CITY)
     if not weather.startswith("Météo indisponible"):
         parts.append(f"Météo à {weather}.")
