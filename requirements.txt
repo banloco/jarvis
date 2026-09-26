@@ -1,0 +1,32 @@
+# Paquets Python de Jarvis — installation : python -m pip install -r requirements.txt
+# Versions testées sous Windows 11, Python 3.14. À installer à part : Ollama (https://ollama.com)
+# puis : ollama pull qwen2.5:3b  et  ollama pull paraphrase-multilingual
+
+# Cerveau et mémoire
+ollama==0.6.2
+httpx==0.28.1
+numpy==2.5.3
+
+# Interface
+customtkinter==6.0.0
+rich==15.0.0
+
+# Micro, réveil vocal, reconnaissance vocale
+sounddevice==0.5.6
+SpeechRecognition==3.17.0
+openwakeword==0.6.0
+onnxruntime==1.30.0
+
+# Voix
+edge-tts==7.2.8
+pyttsx3==2.99
+pywin32==312
+
+# Outils
+ddgs==9.16.0
+
+# Gestes (webcam)
+mediapipe==1.0.1
+opencv-python==5.0.0.93
+scikit-learn==1.9.1
+joblib==1.6.0

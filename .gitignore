@@ -1,0 +1,15 @@
+# Données personnelles : mémoire de Jarvis et exemples de gestes (jamais versionnées)
+memory.json
+facts.json
+long_term.json
+long_term.*.npy
+gestures_data*.npz
+gestures_model.joblib
+
+# Téléchargés automatiquement (modèle de main MediaPipe, données HaGRID)
+models/
+data/
+
+# Fichiers temporaires
+*.tmp
+__pycache__/
